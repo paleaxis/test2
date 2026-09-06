@@ -59,8 +59,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const { marked } = require('marked'); // Markdown → HTML (GFM tables etc.)
-const yaml = require('js-yaml'); // blog frontmatter parsing
+// Content adapter: Supabase (backend) → local files (fallback), one
+// enriched/validated/sanitized shape for both. See scripts/lib/.
+const contentSource = require('./lib/content-source');
 
 const ROOT = path.resolve(__dirname, '..');
 const SRC = path.join(ROOT, 'src');
@@ -521,202 +522,56 @@ projects = projects.map((p, i) => ({
 }));
 
 /* ------------------------------------------------------------------ */
-/* markdown pipeline (blog + events share this setup)                  */
+/* content source (Supabase → local fallback)                          */
 /* ------------------------------------------------------------------ */
+// All backend-managed content — blog posts, events, funkystuff and the
+// centralized site config — is loaded through scripts/lib/
+// content-source.js. Priority order:
+//
+//   1. Supabase, when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set
+//      (build-time service key, server-side only — never bundled).
+//   2. Local files (content/blog, content/events, src/data/…), the
+//      original authoring model — still the fully supported offline
+//      mode and the fallback if the backend is unreachable.
+//
+// The loader returns collections ALREADY enriched with exactly the
+// fields the rest of this file has always consumed (slug, url, code,
+// cover, readingTime, status booleans, contentHtml …) and Markdown is
+// rendered + SANITIZED there, identically for both sources. So the
+// only structural change below is that loading is asynchronous (the
+// fetch must resolve before any template renders) — see boot() at the
+// bottom of this file. Everything downstream (resolveRefs, templates,
+// makeItem, the SVG generator) is untouched.
 
-// escape raw text going inside <code> in fenced blocks
-function escHtml(x) {
-  return String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+const pendingContent = contentSource.loadContent();
+let posts;
+let events;
+let funky = [];
+let funkyFiles = null; // [{slug, path}] — set when content came from Supabase
 
-// marked configured once. gfm gives tables/strikethrough/task lists;
-// breaks:false keeps standard CommonMark line semantics. The code
-// renderer routes fences to the site's pre.code style (terminal look,
-// 07-components.css) instead of a bare <pre>.
-marked.use({
-  gfm: true,
-  breaks: false,
-  renderer: {
-    code(token) {
-      return `<pre class="code"><code>${escHtml(token.text)}</code></pre>`;
-    },
-  },
+pendingContent.then((loaded) => {
+  posts = loaded.posts;
+  events = loaded.events;
+  funky = loaded.funky;
+  funkyFiles = loaded.funkyFiles;
+  // the centralized config object stays the same variable the rest of
+  // the build reads; the backend version replaces the file contents
+  Object.assign(config, loaded.siteConfig);
+  for (const n of loaded.notices) console.warn(`note: ${n}`);
+  console.log(`content source: ${loaded.source}`);
 });
-
-// parse one .md file → { frontmatter fields, body(md), html }
-function loadMarkdownPost(file) {
-  const raw = read(file);
-  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  if (!m) throw new Error(`${path.basename(file)} has no ---frontmatter--- block`);
-  let fm;
-  try {
-    fm = yaml.load(m[1]);
-  } catch (e) {
-    throw new Error(`${path.basename(file)} has invalid frontmatter YAML: ${e.message}`);
-  }
-  return { fm, body: m[2] };
-}
-
-/* ------------------------------------------------------------------ */
-/* markdown events (content/events/*.md)                               */
-/* ------------------------------------------------------------------ */
-// Same authoring model as the blog: one file per event, filename IS
-// the slug (/events/<slug>/). Frontmatter carries the STRUCTURED data
-// the deck/timeline render as components; the optional markdown BODY
-// is the long-form writeup shown on the event page (falls back to the
-// short `description` when absent).
-//
-//   ---
-//   title: "Linux Fundamentals Workshop"  (required)
-//   date: "2026-09-18"                    (required)
-//   status: "upcoming" | "ongoing" | "past"   (required — drives badges)
-//   subtitle: "…"                         (deck/archive card text)
-//   description: "…"                      (short brief + body fallback)
-//   location / duration / level           (meta row on the event page)
-//   speaker: { name, role }
-//   program: [{ time, title }]            (timeline rows)
-//   resources: [track names]
-//   register: "how to join"
-//   draft: true                           (skipped entirely)
-//   ---
-//
-// Sorted date-desc (tie: slug asc) — EVENT.xx codes are assigned AFTER
-// sorting, so EVENT.01 is the most recent event. The build wipes
-// public/ wholesale, so deleting a .md removes its page next run.
-
-const EVENTS_DIR = path.join(ROOT, 'content', 'events');
-
-function loadEvents() {
-  if (!fs.existsSync(EVENTS_DIR)) return [];
-  const files = fs
-    .readdirSync(EVENTS_DIR)
-    .filter((f) => f.endsWith('.md') && !f.startsWith('_'))
-    .sort();
-
-  const evs = [];
-  for (const f of files) {
-    const slug = f.replace(/\.md$/, '');
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
-      throw new Error(`event filename "${f}" must be lowercase-hyphenated (it becomes the URL)`);
-    }
-    const { fm, body } = loadMarkdownPost(path.join(EVENTS_DIR, f));
-    if (fm.draft) continue;
-
-    for (const key of ['title', 'date', 'status']) {
-      if (!fm[key]) throw new Error(`event "${f}" is missing required frontmatter "${key}"`);
-    }
-    if (!parseISO(fm.date)) throw new Error(`event "${f}" has an unparsable date ("${fm.date}")`);
-    if (!['upcoming', 'ongoing', 'past'].includes(fm.status)) {
-      throw new Error(`event "${f}" status must be upcoming|ongoing|past (got "${fm.status}")`);
-    }
-
-    evs.push({
-      ...fm,
-      slug,
-      url: `/events/${slug}/`,
-      contentHtml: body.trim() ? marked.parse(body) : '',
-    });
-  }
-
-  // newest first; display codes assigned AFTER sorting (01 = newest)
-  evs.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.slug.localeCompare(b.slug)));
-  const mapped = evs.map((ev, i) => ({
-    ...ev,
-    code: `EVENT.${String(i + 1).padStart(2, '0')}`,
-    past: ev.status === 'past',
-    ongoing: ev.status === 'ongoing',
-    upcoming: ev.status === 'upcoming', // booleans drive status badges
-    dateFmt: helpers.fmtDate(ev.date),
-  }));
-
-  // Flag the FIRST upcoming event so the collapsing deck on the events
-  // page can ship with data-active="true" pre-rendered (no-JS default).
-  const firstUpcoming = mapped.find((ev) => ev.upcoming);
-  if (firstUpcoming) firstUpcoming.first = true;
-  return mapped;
-}
-
-const events = loadEvents();
 
 achievements = achievements.map((a, i) => ({
   ...a,
   code: `MIL.${String(i + 1).padStart(2, '0')}`,
 }));
 
-/* ------------------------------------------------------------------ */
-/* markdown blog (content/blog/*.md)                                   */
-/* ------------------------------------------------------------------ */
-// The Tech Journal's single source of truth is one Markdown file per
-// post in content/blog/. YAML frontmatter carries the metadata:
-//
-//   ---
-//   title: "Post title"        (required)
-//   date: "2026-08-24"         (required — drives sorting, newest first)
-//   description: "…"           (card + article subtitle; recommended)
-//   author: "Name"             (default "DCITC")
-//   role: "Study group lead"   (byline detail; default "Contributor")
-//   category: "Systems"        (chip; defaults to first tag)
-//   tags: [a, b]               (end-of-article chips)
-//   image: /img/blog/x.png     (cover; falls back to generated plate)
-//   draft: true                (skipped entirely — never published)
-//   ---
-//
-// (No featured flag — featured selection/order is centralized in
-// src/config/site.json, not per-file. See "central content selection".)
-// The filename (minus .md) IS the slug → /blog/<slug>/. Drafts are
-// dropped before anything downstream runs; the build wipes public/
-// wholesale at start, so deleting a .md removes its page next build.
-
-const BLOG_DIR = path.join(ROOT, 'content', 'blog');
-
-function loadBlogPosts() {
-  if (!fs.existsSync(BLOG_DIR)) return [];
-  const files = fs
-    .readdirSync(BLOG_DIR)
-    .filter((f) => f.endsWith('.md') && !f.startsWith('_'))
-    .sort();
-
-  const posts = [];
-  for (const f of files) {
-    const slug = f.replace(/\.md$/, '');
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
-      throw new Error(`blog filename "${f}" must be lowercase-hyphenated (it becomes the URL)`);
-    }
-    const { fm, body } = loadMarkdownPost(path.join(BLOG_DIR, f));
-    if (fm.draft) continue; // drafts never reach any output
-
-    // required fields — fail the build loudly rather than shipping junk
-    for (const key of ['title', 'date']) {
-      if (!fm[key]) throw new Error(`blog post "${f}" is missing required frontmatter "${key}"`);
-    }
-    if (!parseISO(fm.date)) throw new Error(`blog post "${f}" has an unparsable date ("${fm.date}")`);
-
-    // reading time ≈ word count of the markdown source / 200 wpm
-    const words = body.replace(/```[\s\S]*?```/g, ' ').split(/\s+/).filter(Boolean).length;
-
-    posts.push({
-      ...fm,
-      slug,
-      url: `/blog/${slug}/`,
-      subtitle: fm.description || '', // cards print .subtitle
-      category: fm.category || (Array.isArray(fm.tags) && fm.tags[0]) || 'Journal',
-      author: fm.author || 'DCITC',
-      role: fm.role || 'Contributor',
-      tags: Array.isArray(fm.tags) ? fm.tags : [],
-      cover: fm.image || `/img/gen/${slug}.svg`, // custom image or generated plate
-      readingTime: helpers.readingTime(words),
-      dateFmt: helpers.fmtDate(fm.date),
-      contentHtml: marked.parse(body),
-    });
-  }
-
-  // newest first (ties broken alphabetically by slug for determinism);
-  // display codes are assigned AFTER sorting so ART.01 is the newest
-  posts.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.slug.localeCompare(b.slug)));
-  return posts.map((p, i) => ({ ...p, code: `ART.${String(i + 1).padStart(2, '0')}` }));
-}
-
-const posts = loadBlogPosts();
+// (posts + events are loaded via content-source — see the "content
+// source" section above. Sorting, ART.xx/EVENT.xx display codes, the
+// first-upcoming deck flag and every derived field the templates use
+// are applied there with the exact same rules this file used to
+// implement inline. The content/blog/*.md and content/events/*.md
+// authoring model remains fully supported as the local source.)
 
 resources = resources.map((r, i) => ({
   ...r,
@@ -900,75 +755,55 @@ function resolveRefs(list, coll, label, key) {
 // The `featured` boolean previously scattered across content files is
 // gone — this config is now the single source of truth for featured and
 // ordering. Active/past subsets remain status-derived (not config).
-const featuredProjects = resolveRefs(config.featured.projects, projects, 'featured.projects', 'slug');
-if (featuredProjects[0]) featuredProjects[0].first = true; // ships data-active pre-rendered
-if (featuredProjects.length > 3) {
-  // home cards + deck are tuned for exactly three; fail loudly rather
-  // than silently overflowing the layout
-  throw new Error(
-    `config: "featured.projects" lists ${featuredProjects.length} projects — the home grid + ` +
-      `projects deck are tuned for at most 3. Trim the list in src/config/site.json.`,
-  );
-}
-const featuredPosts = resolveRefs(config.featured.posts, posts, 'featured.posts', 'slug');
-const featuredResources = resolveRefs(config.featured.resources, resources, 'featured.resources', 'slug');
-const homeEvents = resolveRefs(config.home.events, events, 'home.events', 'slug');
+//
+// NOTE: these depend on the ASYNC content source (posts/events/config
+// may come from Supabase), so they are derived once per build from
+// boot() AFTER the content source resolves — see deriveSelections().
+let featuredProjects;
+let featuredPosts;
+let featuredResources;
+let homeEvents;
+let upcomingEvents;
+let pastEvents;
 
-const upcomingEvents = events.filter((e) => e.upcoming); // events page deck (all upcoming)
-const pastEvents = events.filter((e) => e.past || e.ongoing); // events page archive/series
+function deriveSelections() {
+  featuredProjects = resolveRefs(config.featured.projects, projects, 'featured.projects', 'slug');
+  if (featuredProjects[0]) featuredProjects[0].first = true; // ships data-active pre-rendered
+  if (featuredProjects.length > 3) {
+    // home cards + deck are tuned for exactly three; fail loudly rather
+    // than silently overflowing the layout
+    throw new Error(
+      `config: "featured.projects" lists ${featuredProjects.length} projects — the home grid + ` +
+        `projects deck are tuned for at most 3. Trim the list in src/config/site.json.`,
+    );
+  }
+  featuredPosts = resolveRefs(config.featured.posts, posts, 'featured.posts', 'slug');
+  featuredResources = resolveRefs(config.featured.resources, resources, 'featured.resources', 'slug');
+  homeEvents = resolveRefs(config.home.events, events, 'home.events', 'slug');
+
+  upcomingEvents = events.filter((e) => e.upcoming); // events page deck (all upcoming)
+  pastEvents = events.filter((e) => e.past || e.ongoing); // events page archive/series
+}
 const resourceCats = CATEGORIES; // filter buttons
 const activeProjectsCount = projects.filter((p) => p.status === 'active').length; // projects intro
 
 /* FUNKYSTUFF — self-contained web toys/games library -----------------
-   <root>/funkystuff/ holds standalone .html files (games, demos, toys).
-   src/data/funkystuff.json is the listing manifest: one entry per file
-   you want on /funkystuff/, with the display fields YOU assign —
-   `file` (required, must exist in the folder), `title`, `dept`
-   (drives the filter chips) and optional `by` (author byline). List
-   order in the JSON = row order on the page. The build still scans
-   the folder itself so every .html gets copied verbatim to
-   public/funkystuff/<file> (opened from a list row in a new tab) and
-   URL-unsafe filenames fail loudly. A scanned file with no manifest
-   entry is copied but not listed (warned); a manifest entry whose
-   file is missing is a hard error. Unique dept values (JSON order)
-   ship as `funkyDepts` for the doc-style filter bar. */
+   Two sources, selected by the content-source loader:
+
+   • LOCAL (legacy/default): <root>/funkystuff/*.html plus the listing
+     manifest src/data/funkystuff.json. Rows carry `_localFile` and the
+     build copies those files verbatim into public/funkystuff/.
+
+   • SUPABASE: metadata lives in funkystuff_items; the actual files
+     live in the `funkystuff` storage bucket under <slug>/<path>.
+     content-source downloads the object index into `funkyFiles` and
+     the build fetches each object verbatim — multi-file projects are
+     supported, `entry_file` is what list rows open.
+
+   Templates see the same shape either way: n / url / title / dept / by
+   (n = padded row index, assigned in content-source normalization). */
 const FUNKY_DIR = path.join(ROOT, 'funkystuff');
-const funkyFiles = fs.existsSync(FUNKY_DIR)
-  ? fs
-      .readdirSync(FUNKY_DIR)
-      .filter((f) => /\.html?$/i.test(f))
-      .sort((a, b) => a.localeCompare(b))
-  : [];
-for (const f of funkyFiles) {
-  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(f)) {
-    throw new Error(`funkystuff: URL-unsafe filename "${f}" (letters/digits/dash/underscore/dot only)`);
-  }
-}
-const funkyMeta = fs.existsSync(path.join(SRC, 'data', 'funkystuff.json'))
-  ? JSON.parse(read(path.join(SRC, 'data', 'funkystuff.json')))
-  : [];
-const funky = funkyMeta.map((m, i) => {
-  if (!m.file || !funkyFiles.includes(m.file)) {
-    throw new Error(`funkystuff: manifest entry ${i + 1} references "${m.file}" but no such file exists in funkystuff/`);
-  }
-  if (!String(m.title || '').trim() || !String(m.dept || '').trim()) {
-    throw new Error(`funkystuff: "${m.file}" needs non-empty "title" and "dept" in src/data/funkystuff.json`);
-  }
-  return {
-    n: String(i + 1).padStart(2, '0'), // row index for the divided list
-    file: m.file,
-    url: `/funkystuff/${m.file}`,
-    title: m.title,
-    dept: m.dept,
-    by: m.by || '',
-  };
-});
-const funkyDepts = [...new Set(funky.map((f) => f.dept))];
-for (const f of funkyFiles) {
-  if (!funky.some((x) => x.file === f)) {
-    console.warn(`funkystuff: "${f}" is not listed in src/data/funkystuff.json — copied but not carded`);
-  }
-}
+let funkyDepts = [];
 
 /* ------------------------------------------------------------------ */
 /* SVG asset generation                                                */
@@ -1333,7 +1168,21 @@ function buildPage(page) {
 // Pipeline order: wipe public/ → generate SVG assets → write CSS/JS
 // bundles → render top-level pages → render per-item pages → extras.
 
-function main() {
+// The pipeline entry: wait for the content source (network fetch when
+// Supabase is configured), derive the funky department chips from the
+// loaded rows, then run the synchronous template pipeline as before.
+async function boot() {
+  await pendingContent;
+  funkyDepts = [...new Set(funky.map((f) => f.dept))];
+  // padded row index for the divided list (templates print {{ .n }})
+  funky.forEach((f, i) => {
+    f.n = String(i + 1).padStart(2, '0');
+  });
+  deriveSelections();
+  await main();
+}
+
+async function main() {
   const t0 = Date.now();
   fs.rmSync(OUT, { recursive: true, force: true });
 
@@ -1377,13 +1226,54 @@ function main() {
   // never concatenated, it loads as-is before the bundle.
   fs.cpSync(path.join(STATIC, 'js', 'vendor'), path.join(OUT, 'js', 'vendor'), { recursive: true });
 
+  // 2a-bis. admin app (content management) ---------------------------
+  // Standalone app at /admin/ (static/admin/). PUBLIC values only are
+  // injected into it — the Supabase URL and anon key. The service-role
+  // key stays in .env and is used exclusively by the build scripts;
+  // all admin writes are authorized by database RLS, not by this page.
+  console.log('admin');
+  fs.mkdirSync(path.join(OUT, 'admin'), { recursive: true });
+  const restClient = require('./lib/supabase-rest');
+  restClient.loadEnv();
+  const adminUrl = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+  const adminAnon = process.env.SUPABASE_ANON_KEY || '';
+  const adminHtml = read(path.join(STATIC, 'admin', 'index.html'))
+    .replace('{{ADMIN_SUPABASE_URL}}', adminUrl)
+    .replace('{{ADMIN_SUPABASE_ANON_KEY}}', adminAnon);
+  const adminJs = read(path.join(STATIC, 'admin', 'app.js'))
+    .replace('{{ADMIN_SUPABASE_URL}}', adminUrl)
+    .replace('{{ADMIN_SUPABASE_ANON_KEY}}', adminAnon)
+    .replace('{{ADMIN_PROJECT_SLUGS}}', JSON.stringify(projects.map((p) => p.slug)))
+    .replace('{{ADMIN_RESOURCE_SLUGS}}', JSON.stringify(resources.map((r) => r.slug)));
+  write(path.join(OUT, 'admin', 'index.html'), adminHtml);
+  write(path.join(OUT, 'admin', 'app.js'), adminJs);
+  write(path.join(OUT, 'css', 'admin.css'), read(path.join(STATIC, 'admin', 'admin.css')));
+  // the admin page links the site's token stylesheet for visual parity
+  write(path.join(OUT, 'css', '01-vars.css'), read(path.join(STATIC, 'css', '01-vars.css')));
+  if (!adminUrl || !adminAnon) {
+    console.warn('  admin: SUPABASE_URL/SUPABASE_ANON_KEY not set — /admin/ will show a setup hint');
+  }
+
   // 2b. funkystuff library files -------------------------------------
   // copied verbatim so /funkystuff/<file> URLs work; the launcher page
   // (/funkystuff/) opens each one in a new tab.
   console.log('funkystuff');
   fs.mkdirSync(path.join(OUT, 'funkystuff'), { recursive: true });
-  for (const it of funky) {
-    write(path.join(OUT, 'funkystuff', it.file), read(path.join(FUNKY_DIR, it.file)));
+  if (funkyFiles) {
+    // Supabase source: every project's files come down from the
+    // funkystuff storage bucket → public/funkystuff/<slug>/<path>
+    const rest = require('./lib/supabase-rest');
+    const c = rest.client();
+    for (const f of funkyFiles) {
+      const data = await rest.downloadObject(c, 'funkystuff', f.path);
+      write(path.join(OUT, 'funkystuff', f.path), data);
+    }
+    console.log(`  ${funkyFiles.length} file(s) from storage bucket`);
+  } else {
+    // Local source: copy manifest-listed files verbatim (legacy shape)
+    for (const it of funky) {
+      write(path.join(OUT, 'funkystuff', it.file), read(path.join(FUNKY_DIR, it._localFile || it.file)));
+    }
   }
 
   // 2c. team photos ---------------------------------------------------
@@ -1551,4 +1441,7 @@ function main() {
   console.log(`done in ${Date.now() - t0}ms → public/`);
 }
 
-main();
+boot().catch((e) => {
+  console.error(e.message || e);
+  process.exit(1);
+});

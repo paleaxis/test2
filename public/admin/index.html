@@ -1,0 +1,72 @@
+<!doctype html>
+<!-- ==================================================================
+     DCITC ADMIN  —  static/admin/index.html  →  public/admin/index.html
+     ==================================================================
+     A small, standalone content-management app. Talks to Supabase
+     directly from the browser with the PUBLIC ANON KEY — every write is
+     authorized server-side by RLS policies (see supabase/migrations/
+     001_init.sql). The service-role key never appears in this file or
+     anywhere else in public/.
+
+     Sections: Dashboard · Posts · Events · Funkystuff · Featured.
+     Markdown authoring for posts/events with live preview (marked +
+     DOMPurify, vendored).
+     ================================================================== -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>DCITC — Admin</title>
+    <link rel="icon" href="/img/favicon.svg" />
+    <link rel="stylesheet" href="/css/01-vars.css" />
+    <link rel="stylesheet" href="/css/admin.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600&family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap"
+    />
+    <script src="/js/vendor/supabase.js"></script>
+    <script src="/js/vendor/marked.min.js"></script>
+    <script src="/js/vendor/purify.min.js"></script>
+  </head>
+  <body>
+    <!-- ---------- login gate (pre-auth) ---------- -->
+    <div id="login-view" class="login-wrap" hidden>
+      <form class="login-box" id="login-form">
+        <h1>DCITC Admin</h1>
+        <p class="hint">Administrator sign-in. Public account registration is disabled — accounts are provisioned by the club.</p>
+        <label class="field"><span>Email</span>
+          <input type="email" id="login-email" autocomplete="username" required />
+        </label>
+        <label class="field"><span>Password</span>
+          <input type="password" id="login-password" autocomplete="current-password" required />
+        </label>
+        <div class="btn-row">
+          <button class="btn primary" type="submit" id="login-btn">Sign in</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- ---------- app shell (post-auth) ---------- -->
+    <div id="app-view" class="admin-shell" hidden>
+      <nav class="admin-side">
+        <div class="brand"><b>DCITC</b> // ADMIN</div>
+        <button data-nav="dashboard" class="is-active">Dashboard</button>
+        <button data-nav="posts">Posts</button>
+        <button data-nav="events">Events</button>
+        <button data-nav="funkystuff">Funkystuff</button>
+        <button data-nav="featured">Featured</button>
+        <div class="spacer"></div>
+        <div class="who" id="whoami"></div>
+        <button id="logout-btn">Sign out</button>
+      </nav>
+      <main class="admin-main" id="main"></main>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
