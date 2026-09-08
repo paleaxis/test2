@@ -26,7 +26,8 @@
  *   • every action is reported; a summary ends the run and the process
  *     exits non-zero if any record failed
  *
- * The storage upload requires the service-role key (server-side only).
+ * The storage upload requires the secret key (or legacy service-role
+ * key), server-side only.
  */
 
 const fs = require('fs');
@@ -142,6 +143,81 @@ function readFunkystuff() {
   }));
 }
 
+// Gallery — mirrors the build's local reader: every image file in
+// content/gallery/ (with the optional captions.json sidecar) becomes a
+// gallery_items row + a file in the `gallery` storage bucket (flat, at
+// bucket root — object key IS the file name).
+const GALLERY_IMAGE_RE = /\.(jpe?g|png|webp|gif|svg)$/i;
+function readGallery() {
+  const dir = path.join(ROOT, 'content', 'gallery');
+  if (!fs.existsSync(dir)) return [];
+  const files = fs.readdirSync(dir).filter((f) => GALLERY_IMAGE_RE.test(f));
+  let captions = {};
+  const capPath = path.join(dir, 'captions.json');
+  if (fs.existsSync(capPath)) captions = JSON.parse(fs.readFileSync(capPath, 'utf8'));
+  return files
+    .sort((a, b) => a.localeCompare(b))
+    .map((file, i) => ({
+      file,
+      caption: captions[file] || '',
+      sort: i,
+      draft: false,
+      _filePath: path.join(dir, file),
+    }));
+}
+
+// The six repo-JSON collections that stay file-managed in the repo but
+// can be overridden per-key from Supabase. Import seeds the DB rows ONCE
+// (administrators then edit them via /admin/ → Collections; the local
+// files remain the seed + offline fallback).
+function readCollections() {
+  const read = (name) => JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'data', `${name}.json`), 'utf8'));
+  return {
+    site: read('site'),
+    nav: read('nav'),
+    team: read('team'),
+    projects: read('projects'),
+    resources: read('resources'),
+    achievements: read('achievements'),
+  };
+}
+
+// content_collections upsert — key is the PK, so this never duplicates.
+async function upsertCollection(c, key, payload) {
+  const res = await fetch(`${c.url}/rest/v1/content_collections?on_conflict=key`, {
+    method: 'POST',
+    headers: {
+      ...rest.authHeaders(c),
+      'Content-Type': 'application/json',
+      Prefer: 'resolution=merge-duplicates,return=representation',
+    },
+    body: JSON.stringify({ key, payload }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`content_collections upsert ${res.status}: ${body.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
+// gallery_items upsert — file is the natural key (unique).
+async function upsertGalleryItem(c, row) {
+  const res = await fetch(`${c.url}/rest/v1/gallery_items?on_conflict=file`, {
+    method: 'POST',
+    headers: {
+      ...rest.authHeaders(c),
+      'Content-Type': 'application/json',
+      Prefer: 'resolution=merge-duplicates,return=representation',
+    },
+    body: JSON.stringify(row),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`gallery_items upsert ${res.status}: ${body.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
 /* ------------------------------------------------------------------ */
 /* REST upsert helpers (service key required)                          */
 /* ------------------------------------------------------------------ */
@@ -150,8 +226,7 @@ async function insertRow(c, table, row) {
   const res = await fetch(`${c.url}/rest/v1/${table}`, {
     method: 'POST',
     headers: {
-      apikey: c.key,
-      Authorization: `Bearer ${c.key}`,
+      ...rest.authHeaders(c),
       'Content-Type': 'application/json',
       Prefer: 'resolution=merge-duplicates,return=representation',
     },
@@ -168,8 +243,7 @@ async function updateRow(c, table, slug, patch) {
   const res = await fetch(`${c.url}/rest/v1/${table}?slug=eq.${encodeURIComponent(slug)}`, {
     method: 'PATCH',
     headers: {
-      apikey: c.key,
-      Authorization: `Bearer ${c.key}`,
+      ...rest.authHeaders(c),
       'Content-Type': 'application/json',
       Prefer: 'return=representation',
     },
@@ -182,12 +256,11 @@ async function updateRow(c, table, slug, patch) {
   return res.json();
 }
 
-async function uploadObject(c, objectPath, buffer, contentType) {
-  const res = await fetch(`${c.url}/storage/v1/object/funkystuff/${objectPath}`, {
+async function uploadObject(c, bucket, objectPath, buffer, contentType) {
+  const res = await fetch(`${c.url}/storage/v1/object/${bucket}/${objectPath}`, {
     method: 'POST',
     headers: {
-      apikey: c.key,
-      Authorization: `Bearer ${c.key}`,
+      ...rest.authHeaders(c),
       'Content-Type': contentType || 'text/html; charset=utf-8',
       'x-upsert': 'true',
     },
@@ -195,7 +268,7 @@ async function uploadObject(c, objectPath, buffer, contentType) {
   });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`storage upload ${objectPath} ${res.status}: ${body.slice(0, 300)}`);
+    throw new Error(`storage upload ${bucket}/${objectPath} ${res.status}: ${body.slice(0, 300)}`);
   }
 }
 
@@ -207,7 +280,8 @@ async function main() {
   const c = rest.client();
   if (!DRY && !c.enabled) {
     console.error('Supabase is not configured.');
-    console.error('Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env (server-side only).');
+    console.error('Set SUPABASE_URL and a server-side key in .env: SUPABASE_SECRET_KEY');
+    console.error('(or the legacy SUPABASE_SERVICE_ROLE_KEY). Keys are server-side only.');
     console.error('Then apply supabase/migrations/001_init.sql and run this import again.');
     process.exit(1);
   }
@@ -219,6 +293,8 @@ async function main() {
   const posts = readPosts();
   const events = readEvents();
   const funky = readFunkystuff();
+  const gallery = readGallery();
+  const collections = readCollections();
   const siteConfig = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'config', 'site.json'), 'utf8'));
 
   const seenSlugs = { posts: new Set(), events: new Set(), funky: new Set() };
@@ -244,6 +320,15 @@ async function main() {
     seenSlugs.funky.add(f.slug);
     if (!f.title || !f.dept) complain(`funkystuff "${f.slug}": title and dept are required`);
   }
+  for (const g of gallery) {
+    if (!SLUG_RE.test(g.file) && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(g.file)) {
+      complain(`gallery "${g.file}": filename must be URL-safe (letters/digits/-/_)`);
+    }
+  }
+  const COLLECTION_KEYS = ['site', 'nav', 'team', 'projects', 'resources', 'achievements'];
+  for (const key of Object.keys(collections)) {
+    if (!COLLECTION_KEYS.includes(key)) complain(`collection "${key}": not in ${COLLECTION_KEYS.join(', ')}`);
+  }
   // config references must resolve against the import sets
   for (const slug of siteConfig.featured.posts) {
     if (!seenSlugs.posts.has(slug)) complain(`site_config: featured.posts references unknown slug "${slug}"`);
@@ -256,7 +341,10 @@ async function main() {
     console.error(`\n${problems.length} validation problem(s) — nothing was written. Fix and re-run.`);
     process.exit(1);
   }
-  console.log(`Validation OK: ${posts.length} posts, ${events.length} events, ${funky.length} funkystuff items.\n`);
+  console.log(
+    `Validation OK: ${posts.length} posts, ${events.length} events, ${funky.length} funkystuff items, ` +
+      `${gallery.length} gallery images, ${Object.keys(collections).length} collections.\n`,
+  );
   if (DRY) {
     console.log('Dry run complete — no writes performed.');
     return;
@@ -380,10 +468,80 @@ async function main() {
     // upload the file (upsert → safe to re-run)
     try {
       const buf = fs.readFileSync(f._sourceFile);
-      await uploadObject(c, `${f.slug}/${f.entry_file}`, buf, 'text/html; charset=utf-8');
+      await uploadObject(c, 'funkystuff', `${f.slug}/${f.entry_file}`, buf, 'text/html; charset=utf-8');
       report('uploaded', `storage:funkystuff/${f.slug}/${f.entry_file}`);
     } catch (err) {
       report('failed', `storage ${f.slug}: ${err.message.split('\n')[0]}`);
+    }
+  }
+
+  /* ---------- write: gallery (metadata + storage bucket) ---------- */
+
+  console.log('\ngallery');
+  const existingGallery = await rest.fetchAll(c, 'gallery_items', 'select=file').catch(() => []);
+  const galleryIndex = new Set(existingGallery.map((r) => r.file));
+  for (const g of gallery) {
+    if (!galleryIndex.has(g.file)) {
+      try {
+        await upsertGalleryItem(c, {
+          file: g.file,
+          caption: g.caption,
+          sort: g.sort,
+          draft: g.draft,
+        });
+        report('created', `gallery_items/${g.file}`);
+      } catch (err) {
+        report('failed', `gallery_items/${g.file}: ${err.message.split('\n')[0]}`);
+        continue;
+      }
+    } else if (FORCE) {
+      try {
+        await upsertGalleryItem(c, {
+          file: g.file,
+          caption: g.caption,
+          sort: g.sort,
+          draft: g.draft,
+        });
+        report('updated', `gallery_items/${g.file}`);
+      } catch (err) {
+        report('failed', `gallery_items/${g.file}: ${err.message.split('\n')[0]}`);
+        continue;
+      }
+    } else {
+      report('skipped', `gallery_items/${g.file} already exists (use --force to update)`);
+    }
+    // upload the image (upsert → safe to re-run). Object key = file name
+    // (flat at bucket root — matches the public-download policy join).
+    try {
+      const buf = fs.readFileSync(g._filePath);
+      await uploadObject(c, 'gallery', g.file, buf, 'image/*');
+      report('uploaded', `storage:gallery/${g.file}`);
+    } catch (err) {
+      report('failed', `storage:gallery ${g.file}: ${err.message.split('\n')[0]}`);
+    }
+  }
+
+  /* ---------- write: content collections (seed once, admin-owned) ---------- */
+
+  // Collections are ADMIN-owned once seeded: a row, once created, is the
+  // source of truth (the build prefers it over the repo file). So this
+  // seeds per-key ONLY when no row exists yet, exactly like posts/events
+  // — --force re-seeds from the repo (which is how you undo an edit).
+  console.log('\ncontent_collections');
+  const existingCollections = await rest
+    .fetchAll(c, 'content_collections', 'select=key')
+    .catch(() => []);
+  const collectionIndex = new Set(existingCollections.map((r) => r.key));
+  for (const [key, payload] of Object.entries(collections)) {
+    if (!collectionIndex.has(key) || FORCE) {
+      try {
+        await upsertCollection(c, key, payload);
+        report('created', `content_collections/${key}`);
+      } catch (err) {
+        report('failed', `content_collections/${key}: ${err.message.split('\n')[0]}`);
+      }
+    } else {
+      report('skipped', `content_collections/${key} already exists (use --force to re-seed)`);
     }
   }
 
@@ -394,8 +552,7 @@ async function main() {
     const res = await fetch(`${c.url}/rest/v1/site_config?id=eq.1`, {
       method: 'PATCH',
       headers: {
-        apikey: c.key,
-        Authorization: `Bearer ${c.key}`,
+        ...rest.authHeaders(c),
         'Content-Type': 'application/json',
         Prefer: 'return=representation',
       },

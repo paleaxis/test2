@@ -482,12 +482,19 @@ function renderTemplate(tpl, scope, root) {
 //   thumb/src — generated SVG artwork path (see SVG section)
 // plus per-type extras (status booleans, formatted dates, reading time).
 
-const site = readJSON(path.join(SRC, 'data', 'site.json')); // global identity: name, socials, facts…
-const navDef = readJSON(path.join(SRC, 'data', 'nav.json')); // nav items + active-match rules
-let projects = readJSON(path.join(SRC, 'data', 'projects.json'));
-let achievements = readJSON(path.join(SRC, 'data', 'achievements.json'));
-let resources = readJSON(path.join(SRC, 'data', 'resources.json'));
-let team = readJSON(path.join(SRC, 'data', 'team.json'));
+// LOCAL SEEDS — every collection starts from its repo JSON file. When
+// Supabase is configured and a matching content_collections row exists
+// (key = collection name), the COLLECTION is re-derived from that row in
+// boot() instead (the DB then becomes the source of truth for it). The
+// local file stays the seed/default + offline-mode data. The SAME
+// enrichment functions run either way, so the two sources are
+// indistinguishable downstream.
+const siteSeed = readJSON(path.join(SRC, 'data', 'site.json')); // global identity: name, socials, facts…
+const navSeed = readJSON(path.join(SRC, 'data', 'nav.json')); // nav items + active-match rules
+const projectsSeed = readJSON(path.join(SRC, 'data', 'projects.json'));
+const achievementsSeed = readJSON(path.join(SRC, 'data', 'achievements.json'));
+const resourcesSeed = readJSON(path.join(SRC, 'data', 'resources.json'));
+const teamSeed = readJSON(path.join(SRC, 'data', 'team.json'));
 // CENTRAL SITE CONFIG — src/config/site.json controls which content is
 // featured/curated and in what ORDER, by referencing each item's slug
 // (or title for resources). Content files stay the single source of
@@ -495,6 +502,50 @@ let team = readJSON(path.join(SRC, 'data', 'team.json'));
 // A reference to a nonexistent item is a hard build error (see the
 // resolveRefs helper in the "selecting featured content" section).
 const config = readJSON(path.join(SRC, 'config', 'site.json'));
+
+// enriched (derived) values — reassigned by deriveCollections()
+let site = siteSeed;
+let navDef = navSeed;
+let projects = projectsSeed;
+let achievements = achievementsSeed;
+let resources = resourcesSeed;
+let team = teamSeed; // { current, batches } — see deriveCollections
+let teamRaw = teamSeed;
+let teamBatches = {};
+let currentBatchId = teamSeed.current;
+let teamBatchesList = [];
+let activeProjectsCount = 0;
+let gallery = [];
+let galleryFiles = null; // [{path}] — set when gallery came from storage
+let galleryFallback = false; // true when Supabase had no published items
+
+// enrichment — exact same math the old inline blocks performed; must
+// stay reusable so the DB source can be enriched identically
+function enrichProjects(list) {
+  return list.map((p, i) => ({
+    ...p,
+    code: `PROJ.${String(i + 1).padStart(2, '0')}`,
+    url: `/projects/${p.slug}/`,
+    stackList: p.stack ? p.stack.join(' · ') : '',
+    teamList: p.team ? p.team.map((m) => m.name).join(', ') : '',
+    thumb: p.thumb || `/img/gen/${p.slug}.svg`, // falls back to generated art
+    approach: (p.approach || []).map((a, j) => ({ ...a, n: String(j + 1).padStart(2, '0') })),
+  }));
+}
+
+function enrichAchievements(list) {
+  return list.map((a, i) => ({
+    ...a,
+    code: `MIL.${String(i + 1).padStart(2, '0')}`,
+  }));
+}
+
+function enrichResources(list) {
+  return list.map((r, i) => ({
+    ...r,
+    code: `RES.${String(i + 1).padStart(2, '0')}`,
+  }));
+}
 
 // Resource filter chips (resources page "Browse" section). Order here
 // is the order the buttons render in.
@@ -511,15 +562,65 @@ const CATEGORIES = [
   'Dev Tools',
 ];
 
-projects = projects.map((p, i) => ({
-  ...p,
-  code: `PROJ.${String(i + 1).padStart(2, '0')}`,
-  url: `/projects/${p.slug}/`,
-  stackList: p.stack ? p.stack.join(' · ') : '',
-  teamList: p.team ? p.team.map((m) => m.name).join(', ') : '',
-  thumb: p.thumb || `/img/gen/${p.slug}.svg`, // falls back to generated art
-  approach: (p.approach || []).map((a, j) => ({ ...a, n: String(j + 1).padStart(2, '0') })),
-}));
+// deriveCollections(collections) — rerun enrichment + team derivation.
+// `collections` is the DB override (content_collections: key → payload)
+// or null; absent keys fall back to the local seed files. Called once at
+// module load (local defaults) and again from boot() after the content
+// source resolves, so the DB can supersede any collection the admin edits.
+const TEAM_PHOTO_DIR = path.join(ROOT, 'content', 'team');
+const TEAM_PHOTO_RE = /\.(jpe?g|png|webp)$/i;
+function scanTeamPhotos(batchId) {
+  const dir = path.join(TEAM_PHOTO_DIR, batchId);
+  const map = {};
+  if (fs.existsSync(dir)) {
+    for (const f of fs.readdirSync(dir)) {
+      if (TEAM_PHOTO_RE.test(f)) {
+        const seed = f.replace(TEAM_PHOTO_RE, '');
+        map[seed] = f;
+      }
+    }
+  }
+  return map;
+}
+
+function deriveCollections(collections) {
+  const c = collections || {};
+  // Per-key fallback: a DB collection with a top-level field missing
+  // (edited only in part, e.g. just `site.name`) inherits that field
+  // from the local seed. Full replacement rows still win entirely.
+  const pick = (key, seed) => (c[key] === undefined ? seed : { ...seed, ...c[key] });
+  site = pick('site', siteSeed);
+  navDef = pick('nav', navSeed);
+  projects = enrichProjects(c.projects || projectsSeed);
+  achievements = enrichAchievements(c.achievements || achievementsSeed);
+  resources = enrichResources(c.resources || resourcesSeed);
+
+  // team is array-free: it's { current, batches } — merge just like site
+  const raw = pick('team', teamSeed);
+  teamRaw = raw;
+  teamBatches = {};
+  for (const [batchId, batch] of Object.entries(raw.batches || {})) {
+    const photos = scanTeamPhotos(batchId);
+    teamBatches[batchId] = batch.groups.map((g, i) => ({
+      ...g,
+      code: `TEAM.${String(i + 1).padStart(2, '0')}`,
+      many: (g.members || []).length > 4,
+      members: (g.members || []).map((m) => {
+        const photo = photos[m.seed];
+        return photo ? { ...m, photo } : m;
+      }),
+    }));
+  }
+  currentBatchId = raw.current;
+  team = teamBatches[currentBatchId] || []; // backward compat: about page uses {{ .team }}
+  teamBatchesList = Object.entries(raw.batches || {}).map(([id, b]) => ({
+    id,
+    label: b.label,
+  }));
+  activeProjectsCount = projects.filter((p) => p.status === 'active').length;
+}
+
+deriveCollections(null); // local seeds → enriched defaults
 
 /* ------------------------------------------------------------------ */
 /* content source (Supabase → local fallback)                          */
@@ -528,8 +629,9 @@ projects = projects.map((p, i) => ({
 // centralized site config — is loaded through scripts/lib/
 // content-source.js. Priority order:
 //
-//   1. Supabase, when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set
-//      (build-time service key, server-side only — never bundled).
+//   1. Supabase, when SUPABASE_URL + a server-side key are set
+//      (SUPABASE_SECRET_KEY, or the legacy SUPABASE_SERVICE_ROLE_KEY —
+//      build-time only, never bundled).
 //   2. Local files (content/blog, content/events, src/data/…), the
 //      original authoring model — still the fully supported offline
 //      mode and the fallback if the backend is unreachable.
@@ -557,14 +659,14 @@ pendingContent.then((loaded) => {
   // the centralized config object stays the same variable the rest of
   // the build reads; the backend version replaces the file contents
   Object.assign(config, loaded.siteConfig);
+  // the six repo-JSON collections + the gallery can also be overridden
+  // from the backend (content_collections + gallery_items/storage).
+  // deriveCollections/deriveGallery fall back to local seeds per-key.
+  deriveCollections(loaded.collections);
+  deriveGallery(loaded.gallery);
   for (const n of loaded.notices) console.warn(`note: ${n}`);
   console.log(`content source: ${loaded.source}`);
 });
-
-achievements = achievements.map((a, i) => ({
-  ...a,
-  code: `MIL.${String(i + 1).padStart(2, '0')}`,
-}));
 
 // (posts + events are loaded via content-source — see the "content
 // source" section above. Sorting, ART.xx/EVENT.xx display codes, the
@@ -573,72 +675,24 @@ achievements = achievements.map((a, i) => ({
 // implement inline. The content/blog/*.md and content/events/*.md
 // authoring model remains fully supported as the local source.)
 
-resources = resources.map((r, i) => ({
-  ...r,
-  code: `RES.${String(i + 1).padStart(2, '0')}`,
-}));
-
-/* TEAM — batch-aware structure --------------------------------------------
-   team.json format: { current: "27", batches: { "27": { label, groups }, ... } }
-   Each group gets a code (TEAM.01, TEAM.02, ...) within its batch.
-   teamBatches = { "27": [...groups], "26": [...groups], ... } (all batches, coded)
-   team        = current batch's groups (for about page backward compat)
-
-   REAL PHOTOS (replacing the mock SVGs): drop a photo named
-   `content/team/<batch>/<seed>.<ext>` (jpg/jpeg/png/webp) where <seed>
-   matches a member's seed in team.json. The build auto-detects it and
-   the avatar <img> uses /content/team/<batch>/<seed>.<ext> instead of the
-   generated SVG. No team.json edit needed — just the file + seed match. */
-const TEAM_PHOTO_DIR = path.join(ROOT, 'content', 'team');
-const TEAM_PHOTO_RE = /\.(jpe?g|png|webp)$/i;
-// map batchId -> { seed: "filename.ext" } for members that have a real photo
-function scanTeamPhotos(batchId) {
-  const dir = path.join(TEAM_PHOTO_DIR, batchId);
-  const map = {};
-  if (fs.existsSync(dir)) {
-    for (const f of fs.readdirSync(dir)) {
-      if (TEAM_PHOTO_RE.test(f)) {
-        const seed = f.replace(TEAM_PHOTO_RE, '');
-        map[seed] = f;
-      }
-    }
-  }
-  return map;
-}
-const teamRaw = team; // { current, batches }
-const teamBatches = {};
-for (const [batchId, batch] of Object.entries(teamRaw.batches)) {
-  const photos = scanTeamPhotos(batchId);
-  teamBatches[batchId] = batch.groups.map((g, i) => ({
-    ...g,
-    code: `TEAM.${String(i + 1).padStart(2, '0')}`,
-    many: (g.members || []).length > 4,
-    members: (g.members || []).map((m) => {
-      const photo = photos[m.seed];
-      return photo ? { ...m, photo } : m;
-    }),
-  }));
-}
-const currentBatchId = teamRaw.current;
-team = teamBatches[currentBatchId] || []; // backward compat: about page uses {{ .team }}
-const teamBatchesList = Object.entries(teamRaw.batches).map(([id, b]) => ({
-  id,
-  label: b.label,
-}));
-
-/* GALLERY — photo strip driven by <root>/content/gallery/ -----------------
-   EASY ADDING: drop any image (jpg/jpeg/png/webp/gif/svg — case-insensitive)
-   into content/gallery/ and rebuild. Every file becomes an item with NO
-   JSON to touch. Layout metadata (tile size class + parallax speed) is
-   auto-assigned from a deterministic repeating pattern so the scattered,
-   mixed-size strip always holds no matter how many images.
-   - Optional content/gallery/captions.json = { "<filename>": "caption" }
-     overrides the default caption (filename with -/_→space, title case);
-     unknown keys warn; missing files in it warn too.
-   - Optional per-image "cover.jpg" convention not needed — filename IS the id.
-   URL-unsafe filenames fail loudly (they become the served path + alt text). */
+/* GALLERY — photo strip. Two sources, selected by the content-source
+   loader (exactly like routes above):
+     • LOCAL (legacy/default): <root>/content/gallery/ — drop any image
+       (jpg/jpeg/png/webp/gif/svg) in and it becomes an item, captions
+       optionally overridden by content/gallery/captions.json.
+     • SUPABASE: metadata in gallery_items + files in the `gallery`
+       storage bucket (object key = file name at bucket root).
+       content-source returns {items, files}; build enriches the items
+       with the exact same layout metadata (size class + parallax speed
+       from the deterministic pattern below) and downloads the files
+       verbatim into public/gallery/.
+   Layout metadata is index-based (cycling GALLERY_LAYOUT/GALLERY_SPEEDS)
+   so the scattered, mixed-size strip holds no matter the file count. */
 const GALLERY_DIR = path.join(ROOT, 'content', 'gallery');
 const GALLERY_IMAGE_RE = /\.(jpe?g|png|webp|gif|svg)$/i;
+// let gallery = [];            // computed by deriveGallery()
+// let galleryFiles = null;     // [{path}] — set when gallery came from storage
+// let galleryFallback = false; // true when Supabase had no published items
 
 // deterministic size/speed layout: indexes cycle big/normal/small × orientation
 const GALLERY_LAYOUT = [
@@ -670,7 +724,33 @@ function humanizeCaption(name) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function loadGallery() {
+// galleryItemsFromRows(rows) — deterministic size/speed layout by index.
+// `rows` = [{ file, caption }] in display order. Works identically for
+// the local folder scan (loadLocalGallery) and the Supabase gallery_items.
+function galleryItemsFromRows(rows) {
+  if (!rows.length) return [];
+  return rows.map((r, i) => {
+    const f = r.file;
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(f)) {
+      throw new Error(`gallery filename "${f}" is not URL-safe (keep letters/digits/-/_)`);
+    }
+    const [size, horiz] = GALLERY_LAYOUT[i % GALLERY_LAYOUT.length];
+    return {
+      file: f,
+      src: `/gallery/${f}`,
+      // srcset with a 2x retina variant reusing the same file on modern
+      // browsers isn't worth it here — keep serving the original at 1x.
+      caption: r.caption || humanizeCaption(f),
+      code: `GAL.${String(i + 1).padStart(2, '0')}`,
+      size, // 'big' | 'normal' | 'small'
+      horizontal: horiz, // true = wider-than-tall tile
+      speed: GALLERY_SPEEDS[i % GALLERY_SPEEDS.length], // parallax 1–3
+    };
+  });
+}
+
+// Local source: scan content/gallery/ (+ optional captions.json sidecar)
+function loadLocalGallery() {
   if (!fs.existsSync(GALLERY_DIR)) {
     throw new Error(
       `content/gallery/ does not exist. Create it and drop image files in — they become gallery items.`,
@@ -694,26 +774,24 @@ function loadGallery() {
   }
 
   files.sort((a, b) => a.localeCompare(b));
-  return files.map((f, i) => {
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(f)) {
-      throw new Error(`gallery filename "${f}" is not URL-safe (keep letters/digits/-/_)`);
-    }
-    const [size, horiz] = GALLERY_LAYOUT[i % GALLERY_LAYOUT.length];
-    return {
-      file: f,
-      src: `/gallery/${f}`,
-      // srcset with a 2x retina variant reusing the same file on modern
-      // browsers isn't worth it here — keep serving the original at 1x.
-      caption: captions[f] || humanizeCaption(f),
-      code: `GAL.${String(i + 1).padStart(2, '0')}`,
-      size, // 'big' | 'normal' | 'small'
-      horizontal: horiz, // true = wider-than-tall tile
-      speed: GALLERY_SPEEDS[i % GALLERY_SPEEDS.length], // parallax 1–3
-    };
-  });
+  return galleryItemsFromRows(files.map((f) => ({ file: f, caption: captions[f] })));
 }
 
-let gallery = loadGallery();
+// deriveGallery(source) — pick the gallery source for this build.
+// `source` = { items, files } from content-source (Supabase) or null.
+// Falls back to the local folder when Supabase has no published items.
+function deriveGallery(source) {
+  if (source && source.items && source.items.length) {
+    const items = [...source.items].sort((a, b) => (a.sort - b.sort) || a.file.localeCompare(b.file));
+    gallery = galleryItemsFromRows(items);
+    galleryFiles = source.files || [];
+    galleryFallback = false;
+    return;
+  }
+  if (source && source.items && !source.items.length) galleryFallback = true;
+  gallery = loadLocalGallery();
+  galleryFiles = null;
+}
 
 /* ------------------------------------------------------------------ */
 /* central content selection (config-driven)                           */
@@ -785,7 +863,6 @@ function deriveSelections() {
   pastEvents = events.filter((e) => e.past || e.ongoing); // events page archive/series
 }
 const resourceCats = CATEGORIES; // filter buttons
-const activeProjectsCount = projects.filter((p) => p.status === 'active').length; // projects intro
 
 /* FUNKYSTUFF — self-contained web toys/games library -----------------
    Two sources, selected by the content-source loader:
@@ -1228,30 +1305,42 @@ async function main() {
 
   // 2a-bis. admin app (content management) ---------------------------
   // Standalone app at /admin/ (static/admin/). PUBLIC values only are
-  // injected into it — the Supabase URL and anon key. The service-role
-  // key stays in .env and is used exclusively by the build scripts;
-  // all admin writes are authorized by database RLS, not by this page.
+  // injected into it — the Supabase URL and the publishable key (or the
+  // legacy anon key as a fallback). The secret/service key stays in .env
+  // and is used exclusively by the build scripts; all admin writes are
+  // authorized by database RLS, not by this page.
   console.log('admin');
   fs.mkdirSync(path.join(OUT, 'admin'), { recursive: true });
   const restClient = require('./lib/supabase-rest');
   restClient.loadEnv();
   const adminUrl = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
-  const adminAnon = process.env.SUPABASE_ANON_KEY || '';
+  const adminPub = restClient.publishableKey();
   const adminHtml = read(path.join(STATIC, 'admin', 'index.html'))
     .replace('{{ADMIN_SUPABASE_URL}}', adminUrl)
-    .replace('{{ADMIN_SUPABASE_ANON_KEY}}', adminAnon);
+    .replace('{{ADMIN_SUPABASE_PUBLISHABLE_KEY}}', adminPub);
   const adminJs = read(path.join(STATIC, 'admin', 'app.js'))
     .replace('{{ADMIN_SUPABASE_URL}}', adminUrl)
-    .replace('{{ADMIN_SUPABASE_ANON_KEY}}', adminAnon)
+    .replace('{{ADMIN_SUPABASE_PUBLISHABLE_KEY}}', adminPub)
     .replace('{{ADMIN_PROJECT_SLUGS}}', JSON.stringify(projects.map((p) => p.slug)))
-    .replace('{{ADMIN_RESOURCE_SLUGS}}', JSON.stringify(resources.map((r) => r.slug)));
+    .replace('{{ADMIN_RESOURCE_SLUGS}}', JSON.stringify(resources.map((r) => r.slug)))
+    .replace(
+      '{{ADMIN_COLLECTION_SEEDS}}',
+      JSON.stringify({
+        site: siteSeed,
+        nav: navSeed,
+        team: teamSeed,
+        projects: projectsSeed,
+        resources: resourcesSeed,
+        achievements: achievementsSeed,
+      }),
+    );
   write(path.join(OUT, 'admin', 'index.html'), adminHtml);
   write(path.join(OUT, 'admin', 'app.js'), adminJs);
   write(path.join(OUT, 'css', 'admin.css'), read(path.join(STATIC, 'admin', 'admin.css')));
   // the admin page links the site's token stylesheet for visual parity
   write(path.join(OUT, 'css', '01-vars.css'), read(path.join(STATIC, 'css', '01-vars.css')));
-  if (!adminUrl || !adminAnon) {
-    console.warn('  admin: SUPABASE_URL/SUPABASE_ANON_KEY not set — /admin/ will show a setup hint');
+  if (!adminUrl || !adminPub) {
+    console.warn('  admin: SUPABASE_URL / SUPABASE_PUBLISHABLE_KEY not set — /admin/ will show a setup hint');
   }
 
   // 2b. funkystuff library files -------------------------------------
@@ -1294,11 +1383,23 @@ async function main() {
   }
 
   // 2d. gallery assets ------------------------------------------------
-  // Copy every image from content/gallery/ to public/gallery/ verbatim.
-  // (captions.json is metadata only — never copied.) Items are already
-  // pre-rendered into the page; this just makes the files servable.
+  // Copy image files to public/gallery/ verbatim. Two sources mirroring
+  // the loader: storage bucket `gallery` (when the backend provided the
+  // items) or the local content/gallery/ folder. captions.json / DB
+  // captions are metadata only — never copied. Items are pre-rendered
+  // into the page; this makes the files servable.
   console.log('gallery');
-  if (fs.existsSync(GALLERY_DIR)) {
+  if (galleryFiles && galleryFiles.length) {
+    const rest = require('./lib/supabase-rest');
+    const c = rest.client();
+    const gdir = path.join(OUT, 'gallery');
+    fs.mkdirSync(gdir, { recursive: true });
+    for (const f of galleryFiles) {
+      const data = await rest.downloadObject(c, 'gallery', f.path);
+      write(path.join(gdir, f.path), data);
+    }
+    console.log(`  ${galleryFiles.length} file(s) from storage bucket`);
+  } else if (fs.existsSync(GALLERY_DIR)) {
     const gdir = path.join(OUT, 'gallery');
     fs.mkdirSync(gdir, { recursive: true });
     const files = fs.readdirSync(GALLERY_DIR).filter((f) => GALLERY_IMAGE_RE.test(f));

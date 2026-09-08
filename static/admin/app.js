@@ -2,7 +2,8 @@
    DCITC ADMIN APP  —  static/admin/app.js
    ==================================================================
    Standalone admin application (served at /admin/). Talks to Supabase
-   with the PUBLIC ANON KEY only — the database RLS policies (see
+   with the PUBLIC PUBLISHABLE KEY only (the legacy anon key is the
+   fallback) — the database RLS policies (see
    supabase/migrations/001_init.sql) are what actually authorize every
    read/write; this UI merely reflects them. Draft rows are filtered
    server-side for anon, and every write fails for non-admins.
@@ -15,10 +16,12 @@
 
   /* ---------- build-time injected, public-only values ---------- */
   const SUPABASE_URL = '{{ADMIN_SUPABASE_URL}}';
-  const SUPABASE_ANON_KEY = '{{ADMIN_SUPABASE_ANON_KEY}}';
+  const SUPABASE_PUBLISHABLE_KEY = '{{ADMIN_SUPABASE_PUBLISHABLE_KEY}}';
   // slug catalogs for featured config (projects/resources stay in repo JSON)
   const PROJECT_SLUGS = {{ADMIN_PROJECT_SLUGS}};
   const RESOURCE_SLUGS = {{ADMIN_RESOURCE_SLUGS}};
+  // repo seeds for the six managed collections ("Seed from repo" buttons)
+  window.ADMIN_COLLECTION_SEEDS = {{ADMIN_COLLECTION_SEEDS}};
 
   if (!SUPABASE_URL || SUPABASE_URL.indexOf('{{') === 0) {
     document.body.innerHTML =
@@ -28,7 +31,7 @@
     return;
   }
 
-  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
   let ADMIN = false;
   let current = 'dashboard';
 
@@ -68,6 +71,35 @@
 
   /* ---------- auth gate ---------- */
 
+  // A failed sign-in (bad credentials) never reaches onAuthStateChange
+  // with SIGNED_OUT, but a session that dies mid-page does. To keep the
+  // login box able to show the REAL error, distinguish the two:
+  //   1. sign-in submit renders its own inline message (and clears it on
+  //      the next attempt);
+  //   2. the SIGNED_OUT listener only toasts when there isn't already an
+  //      inline login error on screen.
+  function loginErrorBox() {
+    const box = $('#login-error');
+    if (!box) {
+      status('', '');
+      return null;
+    }
+    return box;
+  }
+  function showLoginError(msg) {
+    const box = loginErrorBox();
+    if (!box) return;
+    box.textContent = msg;
+    box.hidden = false;
+  }
+  function clearLoginError() {
+    const box = loginErrorBox();
+    if (box) {
+      box.textContent = '';
+      box.hidden = true;
+    }
+  }
+
   async function loadProfile() {
     const { data: { user } } = await sb.auth.getUser();
     if (!user) return false;
@@ -105,6 +137,7 @@
 
   $('#login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    clearLoginError();
     const btn = $('#login-btn');
     btn.disabled = true;
     try {
@@ -116,10 +149,30 @@
         await sb.auth.signOut();
         throw new Error('This account does not have admin access.');
       }
+      clearLoginError();
       status('Signed in.', 'ok');
       showApp();
     } catch (err) {
-      status(fmtErr(err), 'err');
+      // TRANSLATE the raw auth errors into what the club member actually
+      // needs to do. The generic signOut() fallback above (non-admin)
+      // surfaces here as an Error too.
+      const raw = fmtErr(err);
+      const em = $('#login-email').value.trim() || '';
+      let msg = raw;
+      const lower = `${raw} ${em}`.toLowerCase();
+      if (lower.includes('invalid login credentials') || lower.includes('invalid credentials') || lower.includes('wrong password')) {
+        msg = 'Email or password is incorrect. Check the credentials and try again.';
+      } else if (lower.includes('email not confirmed')) {
+        msg = 'Email not confirmed yet. Check your inbox (and spam) for the confirmation link, or ask an admin to confirm it for you.';
+      } else if (lower.includes('already registered') || lower.includes('already exists')) {
+        msg = 'Account exists but can not sign in — it was provisioned by the club; if this is new, confirm the email first.';
+      } else if (lower.includes('admin access') || lower.includes('not have admin')) {
+        msg = 'This account is not an administrator. Ask the club to grant admin access.';
+      } else if (lower.includes('invalid api key')) {
+        msg = 'Admin is not configured for this build yet (rebuild the site with Supabase keys in .env).';
+      }
+      showLoginError(msg);
+      status(msg, 'err');
     } finally {
       btn.disabled = false;
     }
@@ -127,9 +180,14 @@
 
   $('#logout-btn').addEventListener('click', () => sb.auth.signOut());
 
-  // covers logout from another tab, expired refresh tokens, etc.
+  // covers logout from another tab, expired refresh tokens, etc. Only
+  // toast when there's no inline login error — otherwise a mid-login
+  // session death would overwrite the real reason with "Signed out.".
   sb.auth.onAuthStateChange((event) => {
-    if (event === 'SIGNED_OUT') showLogin('Signed out.');
+    if (event !== 'SIGNED_OUT') return;
+    const box = $('#login-error');
+    if (box && !box.hidden) return;
+    showLogin('Signed out.');
   });
 
   /* ---------- router ---------- */
@@ -662,6 +720,188 @@
       }
     });
   }
+
+  /* ================================================================
+     GALLERY
+     ================================================================ */
+  // The photo strip: metadata lives in gallery_items, image files in the
+  // `gallery` storage bucket (flat — object key IS the file name). RLS:
+  // anon reads published rows + downloads; admins manage everything.
+  views.gallery = async (main) => {
+    const rows = await db(sb.from('gallery_items').select('*').order('sort')).catch(() => []).then((r) => r || []);
+    main.innerHTML = `
+      <h1 class="admin-title">Gallery</h1>
+      <p class="admin-sub">Drop images here and toggle each to live. The strip is rebuilt on the next
+      <code class="k">node scripts/build.js</code> — sort order drives left-to-right placement.</p>
+      <div class="panel">
+        <div class="btn-row">
+          <input type="file" id="gallery-files" accept="image/*" multiple />
+          <button class="btn primary" id="gallery-upload">+ Upload</button>
+        </div>
+        <p class="hint" style="margin-top:.4rem">jpg/jpeg/png/webp/gif/svg. Filenames must be URL-safe
+        (letters, digits, dash, underscore, dot — no spaces). The file name becomes the URL: /gallery/&lt;file&gt;.</p>
+      </div>
+      <div class="panel"><div class="gal-grid" id="gallery-grid">
+        ${
+          rows.length
+            ? rows
+                .map(
+                  (r) => `<div class="gal-row" data-file="${esc(r.file)}">
+                    <img src="${esc(`/gallery/${r.file}`)}" alt="" loading="lazy" />
+                    <div class="gal-meta"><input type="text" data-caption value="${esc(r.caption)}" placeholder="caption" />
+                      <span class="mono" style="font-size:.75rem">${esc(r.file)}</span></div>
+                    <label class="chk">live
+                      <input type="checkbox" data-draft ${r.draft ? '' : 'checked'} />
+                    </label>
+                    <button class="btn small danger" data-del="${esc(r.file)}">Del</button>
+                  </div>`,
+                )
+                .join('')
+            : '<p class="empty">No gallery items yet.</p>'
+        }
+      </div></div>`;
+    $('#gallery-upload', main).addEventListener('click', uploadGalleryFiles);
+    $('#gallery-grid', main).addEventListener('change', async (e) => {
+      const rowEl = e.target.closest('[data-file]');
+      if (!rowEl) return;
+      const file = rowEl.dataset.file;
+      const caption = $('[data-caption]', rowEl).value.trim();
+      const live = $('[data-draft]', rowEl).checked;
+      try {
+        await db(sb.from('gallery_items').update({ caption, draft: !live }).eq('file', file));
+        status('Gallery item updated.', 'ok');
+      } catch (err) {
+        status(fmtErr(err), 'err');
+      }
+    });
+    $('#gallery-grid', main).addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-del]');
+      if (!btn) return;
+      (async () => {
+        if (!confirm(`Delete gallery item ${btn.dataset.del} (row + file)?`)) return;
+        try {
+          await sb.storage.from('gallery').remove([btn.dataset.del]);
+          await db(sb.from('gallery_items').delete().eq('file', btn.dataset.del));
+          status('Gallery item deleted.', 'ok');
+          nav('gallery');
+        } catch (err) {
+          status(fmtErr(err), 'err');
+        }
+      })();
+    });
+  };
+
+  async function uploadGalleryFiles() {
+    const input = $('#gallery-files');
+    const files = Array.from(input.files || []);
+    if (!files.length) return status('Choose image files first.', 'err');
+    let ok = 0;
+    for (const f of files) {
+      const name = f.name;
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+        status(`Skipped ${esc(name)} — filename must be URL-safe (letters/digits/-/_/.).`, 'err');
+        continue;
+      }
+      try {
+        // upsert the storage object (created first so the public-download
+        // RLS sees a published row later, not mid-upload)
+        const { error: upErr } = await sb.storage.from('gallery').upload(name, f, { upsert: true });
+        if (upErr) throw upErr;
+        // row upsert on file — resolution=merge-duplicates keeps it single
+        const { error: rowErr } = await sb.from('gallery_items').upsert(
+          { file: name, caption: '', sort: 0, draft: false },
+          { onConflict: 'file' },
+        );
+        if (rowErr) throw rowErr;
+        ok++;
+      } catch (err) {
+        status(`Upload ${esc(name)} failed: ${fmtErr(err)}`, 'err');
+        return;
+      }
+    }
+    status(ok ? `${ok} image(s) uploaded (live). Rebuild the site to publish.` : 'Nothing uploaded.', ok ? 'ok' : 'err');
+    input.value = '';
+    nav('gallery');
+  }
+
+  /* ================================================================
+     COLLECTIONS  (repo JSON collections managed as key → JSONB)
+     ================================================================ */
+  // site / nav / team / projects / resources / achievements — the
+  // collections that used to be plain repo files. Each row is a payload
+  // blob; the static build uses the row when present and falls back to
+  // the local file otherwise. Saving here = authoring the next build.
+  const COLLECTION_KEYS = ['site', 'nav', 'team', 'projects', 'resources', 'achievements'];
+  views.collections = async (main) => {
+    const rows = await db(sb.from('content_collections').select('key,payload,updated_at')).catch(() => []);
+    const byKey = Object.fromEntries((rows || []).map((r) => [r.key, r]));
+    main.innerHTML = `
+      <h1 class="admin-title">Collections</h1>
+      <p class="admin-sub">The <b>site</b>/<b>nav</b>/<b>team</b>/<b>projects</b>/<b>resources</b>/<b>achievements</b>
+      collections that live as JSON. Each key is optional: when a row exists the build uses it as the
+      source of truth; an absent row falls back to the file in the repo. Delete a row to “reset” it
+      back to the repo file.</p>
+      <div class="col-grid">${COLLECTION_KEYS.map(
+        (key) => `<div class="panel col-card" data-key="${key}">
+          <h2>${key}</h2>
+          <p class="hint">${byKey[key] ? 'DB row (source of truth).' : 'Repo file (no DB row yet — click “Seed from repo” to create one).'}</p>
+          <textarea class="col-editor mono" spellcheck="false" data-json>${esc(JSON.stringify((byKey[key] && byKey[key].payload) ?? null, null, 2))}</textarea>
+          <div class="btn-row">
+            <button class="btn primary small" data-save>Save</button>
+            <button class="btn small" data-seed>Seed from repo</button>
+            <button class="btn small danger" data-reset>Delete row</button>
+          </div>
+        </div>`,
+      ).join('')}</div>`;
+
+    // seed buttons: embed the repo files' JSON in the page (injected at
+    // build time by scripts/build.js — same shape the site uses now)
+    const seeds = window.ADMIN_COLLECTION_SEEDS || {};
+    $$('[data-seed]', main).forEach((b) => {
+      b.addEventListener('click', () => {
+        const key = b.closest('[data-key]').dataset.key;
+        if (!(key in seeds)) return status(`No repo seed for "${key}".`, 'err');
+        const ta = $('[data-json]', b.closest('[data-key]'));
+        ta.value = JSON.stringify(seeds[key], null, 2);
+        status(`Editor filled from repo "${key}.json". Save to write it.`, 'ok');
+      });
+    });
+    $$('[data-save]', main).forEach((b) =>
+      b.addEventListener('click', async () => {
+        const card = b.closest('[data-key]');
+        const key = card.dataset.key;
+        let payload;
+        try {
+          payload = JSON.parse($('[data-json]', card).value);
+        } catch (e) {
+          return status(`Collection "${key}" is not valid JSON: ${e.message.split('\n')[0]}`, 'err');
+        }
+        try {
+          const { error } = await sb.from('content_collections').upsert({ key, payload }, { onConflict: 'key' });
+          if (error) throw error;
+          status(`Collection "${key}" saved. Rebuild the site to publish.`, 'ok');
+          nav('collections');
+        } catch (e) {
+          status(fmtErr(e), 'err');
+        }
+      }),
+    );
+    $$('[data-reset]', main).forEach((b) =>
+      b.addEventListener('click', async () => {
+        const card = b.closest('[data-key]');
+        const key = card.dataset.key;
+        if (!confirm(`Delete the DB row for "${key}"? The repo file becomes the source again.`)) return;
+        try {
+          const { error } = await sb.from('content_collections').delete().eq('key', key);
+          if (error) throw error;
+          status(`Collection "${key}" reset to repo file.`, 'ok');
+          nav('collections');
+        } catch (e) {
+          status(fmtErr(e), 'err');
+        }
+      }),
+    );
+  };
 
   /* ================================================================
      FEATURED CONFIG

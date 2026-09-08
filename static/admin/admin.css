@@ -381,6 +381,77 @@ table.list tr:hover td {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
+/* ---------- login inline error ---------- */
+
+.login-error {
+  margin: -0.2rem 0 0.8rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--r-sm);
+  border: 1px solid color-mix(in srgb, #ff7d7d 45%, transparent);
+  background: color-mix(in srgb, #ff7d7d 8%, transparent);
+  color: #ffb3b3;
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+/* ---------- gallery management ---------- */
+
+.gal-row {
+  display: grid;
+  grid-template-columns: 72px 1fr auto auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+.gal-row:last-child {
+  border-bottom: 0;
+}
+.gal-row img {
+  width: 72px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+.gal-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.chk input {
+  accent-color: var(--accent);
+}
+
+/* ---------- collections (JSON editors) ---------- */
+
+.col-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 1rem;
+}
+.col-card textarea.col-editor {
+  min-height: 240px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre;
+  word-break: break-all;
+}
+.col-card .btn-row {
+  margin-top: 0.6rem;
+}
+
 .empty {
   color: var(--ink-dim);
   font-size: 0.9rem;

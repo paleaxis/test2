@@ -7,7 +7,8 @@
  * The single adapter between the existing build pipeline and content
  * sources. Priority:
  *
- *   1. Supabase (if SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY set)
+ *   1. Supabase (if SUPABASE_URL + a server-side key are set:
+ *      SUPABASE_SECRET_KEY, or the legacy SUPABASE_SERVICE_ROLE_KEY)
  *   2. Local files (content/blog, content/events, src/data/funkystuff.json)
  *      as fallback / offline mode — the original behavior.
  *
@@ -320,6 +321,37 @@ async function supabaseEvents(c) {
   return rows.map(normalizeEvent);
 }
 
+async function supabaseGallery(c) {
+  // published items in display order (sort asc, then file for stability)
+  const items = await rest.fetchAll(
+    c,
+    'gallery_items',
+    'select=file,caption,sort&draft=is.false&order=sort.asc,file.asc',
+  );
+
+  // object index of every file in the gallery bucket (flat, at bucket
+  // root — key = file name). Used by build.js to download each file
+  // verbatim into public/gallery/.
+  let files = [];
+  if (items.length) {
+    const objs = await rest.listObjects(c, 'gallery', '');
+    // with an empty prefix the storage API returns names relative to the
+    // bucket root, i.e. the full file name — exactly what we want
+    files = objs.filter((o) => o.name && !o.name.endsWith('/')).map((o) => ({ path: o.name }));
+  }
+  return { items, files };
+}
+
+async function supabaseCollections(c) {
+  // The six repo JSON collections that were still file-managed:
+  // site/nav/team/projects/resources/achievements (the site_config table
+  // covers src/config/site.json separately). Returns { key: payload }.
+  const rows = await rest.fetchAll(c, 'content_collections', 'select=key,payload');
+  const out = {};
+  for (const r of rows) out[r.key] = r.payload;
+  return out;
+}
+
 async function supabaseFunkystuff(c) {
   // published items, manifest (sort) order first, then slug for stability
   const rows = await rest.fetchAll(
@@ -339,7 +371,13 @@ async function supabaseFunkystuff(c) {
     const objs = await rest.listObjects(c, 'funkystuff', `${it.slug}/`);
     for (const o of objs) {
       if (!o.name || o.name.endsWith('/')) continue; // synthetic folder rows
-      files.push({ slug: it.slug, path: o.name });
+      // The storage API reports names RELATIVE to the requested prefix
+      // (confirmed live: 'line-runner/' lists 'line-runner.html'), unlike
+      // some SDK docs. Downstream expects the full key from the bucket
+      // root, so the slug folder is re-prefixed (guarded for providers
+      // that already return full keys).
+      const base = `${it.slug}/`;
+      files.push({ slug: it.slug, path: o.name.startsWith(base) ? o.name : `${base}${o.name}` });
     }
   }
   return { items, files };
@@ -355,6 +393,8 @@ async function supabaseFunkystuff(c) {
  *   source: 'supabase'|'local',
  *   posts: Array, events: Array,
  *   funky: Array, funkyFiles: Array<{slug,path}>|null,
+ *   gallery: {items:Array,files:Array<{path}>}|null,
+ *   collections: object|null,        // { key: payload } or null (local mode)
  *   siteConfig: object,
  *   notices: string[]
  * }>}
@@ -370,6 +410,8 @@ async function loadContent() {
       events: enrichEvents(localEvents()),
       funky: localFunkystuff(),
       funkyFiles: null,
+      gallery: null,
+      collections: null,
       siteConfig: localSiteConfig(),
       notices,
     };
@@ -377,13 +419,15 @@ async function loadContent() {
 
   console.log('content source: Supabase (build-time service key)');
   try {
-    const [posts, events, funky, siteConfig] = await Promise.all([
+    const [posts, events, funky, siteConfig, gallery, collections] = await Promise.all([
       supabasePosts(c),
       supabaseEvents(c),
       supabaseFunkystuff(c),
       rest
         .fetchAll(c, 'site_config', 'select=config&id=eq.1')
         .then((r) => (r[0] && r[0].config) || null),
+      supabaseGallery(c),
+      supabaseCollections(c),
     ]);
 
     // Fallbacks: an empty/unset site_config row falls back to the local
@@ -400,9 +444,14 @@ async function loadContent() {
         events: enrichEvents(events),
         funky: localFunkystuff(),
         funkyFiles: null,
+        gallery,
+        collections,
         siteConfig: config,
         notices,
       };
+    }
+    if (gallery.items.length === 0) {
+      notices.push('no published gallery items in Supabase yet — falling back to content/gallery/');
     }
 
     return {
@@ -411,6 +460,8 @@ async function loadContent() {
       events: enrichEvents(events),
       funky: funky.items,
       funkyFiles: funky.files,
+      gallery,
+      collections,
       siteConfig: config,
       notices,
     };
@@ -424,6 +475,8 @@ async function loadContent() {
       events: enrichEvents(localEvents()),
       funky: localFunkystuff(),
       funkyFiles: null,
+      gallery: null,
+      collections: null,
       siteConfig: localSiteConfig(),
       notices,
     };

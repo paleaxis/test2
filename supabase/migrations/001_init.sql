@@ -19,6 +19,16 @@
 --
 --   draft rows are NEVER readable by anon — enforced here, in the
 --   database, not in the frontend. Frontend checks are UI-only.
+--
+-- IDEMPOTENT: re-runnable. Every object guards against existing
+-- definitions (… if not exists / create or replace / drop policy if
+-- exists), so a partially-applied first run can be safely completed by
+-- running the whole script again.
+--
+-- ORDERING NOTE: is_admin() is defined BEFORE any policy that calls it —
+-- CREATE POLICY resolves referenced functions at creation time, so a
+-- forward reference fails with "42883: function public.is_admin() does
+-- not exist".
 -- =====================================================================
 
 create extension if not exists pgcrypto;
@@ -35,13 +45,34 @@ create table if not exists public.profiles (
 
 alter table public.profiles enable row level security;
 
+-- is_admin(): single point of truth for "can write content".
+-- Public signups are disabled (config: Disable new user signups); the
+-- first admin account is created in the dashboard and flagged by hand:
+--   update public.profiles set is_admin = true where email = 'you@…';
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+security definer set search_path = public
+as $$
+  select coalesce(
+    (select p.is_admin from public.profiles p where p.id = auth.uid()),
+    false
+  );
+$$;
+
+revoke execute on function public.is_admin() from anon;
+grant execute on function public.is_admin() to authenticated;
+
 -- a user may read their own profile (the admin UI uses it for gating UI)
+drop policy if exists "read own profile" on public.profiles;
 create policy "read own profile"
   on public.profiles for select to authenticated
   using (auth.uid() = id);
 
 -- ONLY a current admin may grant/revoke admin. No self-service elevation:
 -- brand-new users get is_admin=false (trigger below) and can never flip it.
+drop policy if exists "admins manage profiles" on public.profiles;
 create policy "admins manage profiles"
   on public.profiles for update to authenticated
   using (public.is_admin())
@@ -65,25 +96,6 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
-
--- is_admin(): single point of truth for "can write content".
--- Public signups are disabled (config: Disable new user signups); the
--- first admin account is created in the dashboard and flagged by hand:
---   update public.profiles set is_admin = true where email = 'you@…';
-create or replace function public.is_admin()
-returns boolean
-language sql
-stable
-security definer set search_path = public
-as $$
-  select coalesce(
-    (select p.is_admin from public.profiles p where p.id = auth.uid()),
-    false
-  );
-$$;
-
-revoke execute on function public.is_admin() from anon;
-grant execute on function public.is_admin() to authenticated;
 
 -- ---------------------------------------------------------------------
 -- posts  (Tech Journal)
@@ -109,23 +121,28 @@ create table if not exists public.posts (
 
 alter table public.posts enable row level security;
 
+drop policy if exists "public reads published posts" on public.posts;
 create policy "public reads published posts"
   on public.posts for select to anon, authenticated
   using (draft = false);
 
+drop policy if exists "admins read all posts" on public.posts;
 create policy "admins read all posts"
   on public.posts for select to authenticated
   using (public.is_admin());
 
+drop policy if exists "admins insert posts" on public.posts;
 create policy "admins insert posts"
   on public.posts for insert to authenticated
   with check (public.is_admin());
 
+drop policy if exists "admins update posts" on public.posts;
 create policy "admins update posts"
   on public.posts for update to authenticated
   using (public.is_admin())
   with check (public.is_admin());
 
+drop policy if exists "admins delete posts" on public.posts;
 create policy "admins delete posts"
   on public.posts for delete to authenticated
   using (public.is_admin());
@@ -159,23 +176,28 @@ create table if not exists public.events (
 
 alter table public.events enable row level security;
 
+drop policy if exists "public reads published events" on public.events;
 create policy "public reads published events"
   on public.events for select to anon, authenticated
   using (draft = false);
 
+drop policy if exists "admins read all events" on public.events;
 create policy "admins read all events"
   on public.events for select to authenticated
   using (public.is_admin());
 
+drop policy if exists "admins insert events" on public.events;
 create policy "admins insert events"
   on public.events for insert to authenticated
   with check (public.is_admin());
 
+drop policy if exists "admins update events" on public.events;
 create policy "admins update events"
   on public.events for update to authenticated
   using (public.is_admin())
   with check (public.is_admin());
 
+drop policy if exists "admins delete events" on public.events;
 create policy "admins delete events"
   on public.events for delete to authenticated
   using (public.is_admin());
@@ -204,23 +226,28 @@ create table if not exists public.funkystuff_items (
 
 alter table public.funkystuff_items enable row level security;
 
+drop policy if exists "public reads published funkystuff" on public.funkystuff_items;
 create policy "public reads published funkystuff"
   on public.funkystuff_items for select to anon, authenticated
   using (draft = false);
 
+drop policy if exists "admins read all funkystuff" on public.funkystuff_items;
 create policy "admins read all funkystuff"
   on public.funkystuff_items for select to authenticated
   using (public.is_admin());
 
+drop policy if exists "admins insert funkystuff" on public.funkystuff_items;
 create policy "admins insert funkystuff"
   on public.funkystuff_items for insert to authenticated
   with check (public.is_admin());
 
+drop policy if exists "admins update funkystuff" on public.funkystuff_items;
 create policy "admins update funkystuff"
   on public.funkystuff_items for update to authenticated
   using (public.is_admin())
   with check (public.is_admin());
 
+drop policy if exists "admins delete funkystuff" on public.funkystuff_items;
 create policy "admins delete funkystuff"
   on public.funkystuff_items for delete to authenticated
   using (public.is_admin());
@@ -249,15 +276,18 @@ alter table public.site_config enable row level security;
 -- the rendered site only needs config to SELECT featured content, and
 -- every selection in it references PUBLISHED content only (the build
 -- re-validates), so the shape itself carries no draft data.
+drop policy if exists "public reads site config" on public.site_config;
 create policy "public reads site config"
   on public.site_config for select to anon, authenticated
   using (true);
 
+drop policy if exists "admins update site config" on public.site_config;
 create policy "admins update site config"
   on public.site_config for update to authenticated
   using (public.is_admin())
   with check (public.is_admin());
 
+drop policy if exists "admins insert site config" on public.site_config;
 create policy "admins insert site config"
   on public.site_config for insert to authenticated
   with check (public.is_admin());
@@ -305,6 +335,7 @@ on conflict (id) do nothing;
 -- Draft-ness is enforced by joining the metadata table: the storage
 -- policy checks that the object's top-level folder (the slug) belongs
 -- to a non-draft item. Admins bypass via the second policy.
+drop policy if exists "public downloads published funkystuff files" on storage.objects;
 create policy "public downloads published funkystuff files"
   on storage.objects for select to anon, authenticated
   using (
@@ -316,6 +347,7 @@ create policy "public downloads published funkystuff files"
     )
   );
 
+drop policy if exists "admins manage funkystuff storage" on storage.objects;
 create policy "admins manage funkystuff storage"
   on storage.objects for all to authenticated
   using (
