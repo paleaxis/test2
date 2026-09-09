@@ -558,17 +558,19 @@
 // All page-level UI widgets, in init order:
 //   1. initMobileMenu — the ≤899px slide-in nav drawer
 //   2. initMore       — the desktop "More" dropdown in the navbar
-//   3. initFilters    — tag-button filtering (gallery masonry)
+//   3. initFilters    — tag-button filtering (funkystuff library)
 //   4. initSearch     — live text search (resources page)
 //
 // HOW IT CONNECTS:
 //   - header.html renders [data-menu-toggle] + [data-mobile-menu]
 //     (#1) and [data-more]/[data-more-btn] (#2).
-//   - gallery.html: .gal-filters[data-filter-group=".masonry"] with
-//     button[data-filter] controls figure[data-filter] items (#3).
+//   - funkystuff.html: .gal-filters[data-filter-group=".fs-list"] with
+//     button[data-filter] controls .fs-row[data-filter] items (#3).
 //   - resources.html: input[data-search] in the shelf head against
-//     article[data-searchable] items (#4). (Filter chips removed.)
-//   - about.html: leadership cards rendered inline (no carousel).
+//     article[data-searchable] items (#4).
+//   - events.html: [data-evx] collapsing deck (#5); index.html:
+//     .do-dept rows + [data-dept-modal] (#6); achievements.html:
+//     details.fold → ach tabs (#7); team.html: [data-batch-switch] (#8).
 //     Boot: main.js calls DCITC.pages.init().
 (function () {
   'use strict';
@@ -637,7 +639,7 @@
   /* 3 ─ filter buttons ------------------------------------------------ */
   // Generic mechanism: a container with data-filter-group="<selector>"
   // holds button[data-filter="X"]; elements matching <selector> carry
-  // data-filter="X". "*" shows everything. Used by gallery + resources.
+  // data-filter="X". "*" shows everything. Used by funkystuff.
   function initFilters() {
     document.querySelectorAll('[data-filter-group]').forEach(function (group) {
       var selector = group.getAttribute('data-filter-group');
@@ -2106,20 +2108,6 @@
     if (window.DCITC.pages) window.DCITC.pages.init();
     if (window.DCITC.gallery) window.DCITC.gallery.init();
     if (window.DCITC.fluidTriangle) window.DCITC.fluidTriangle.init();
-
-    // Ctrl/Cmd+K anywhere → the admin console (login screen). Guarded
-    // against typing in inputs/textareas so the shortcut only fires on
-    // the page chrome — and a surfaced interactivity check keeps it
-    // from hijacking the key when the OS/IME wants it.
-    document.addEventListener('keydown', (e) => {
-      if (e.key && e.key.toLowerCase() !== 'k') return;
-      if (!(e.ctrlKey || e.metaKey)) return;
-      if (e.altKey) return;
-      const t = document.activeElement;
-      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
-      e.preventDefault();
-      window.location.assign('/admin/');
-    });
   }
 
   // run at DOMContentLoaded (scripts load with `defer`, but be safe)

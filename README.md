@@ -1,14 +1,16 @@
 # DCITC — Dhaka College IT Club website
 
 Static site generator with zero runtime dependencies. Content lives in
-`src/data/*.json`, layouts in `src/pages/` + `src/partials/`, styles and
-scripts in `static/`. The build outputs a fully static site to `public/`.
+`src/data/*.json` + `content/`, layouts in `src/pages/` + `src/partials/`,
+styles and scripts in `static/`. The build outputs a fully static site to
+`public/`.
 
-> **Content backend:** the site can now build from Supabase instead of
-> the local content files (blog, events, funkystuff, featured config),
-> with an admin UI at `/admin/`. See **[BACKEND.md](BACKEND.md)**.
-> Without configuration nothing changes — the local files remain the
-> default source.
+**File-driven content:** drop a `.md` file in `content/blog/` or
+`content/events/` and it appears on the next build. Drop an image in
+`content/gallery/` and it becomes a gallery tile. Same for every other
+content type — the file system *is* the content source. No database, no
+backend, no admin app. Works on any static host (Vercel, Cloudflare
+Pages, GitHub Pages…).
 
 ## Commands
 
@@ -17,8 +19,6 @@ scripts in `static/`. The build outputs a fully static site to `public/`.
 | `npm run build` | Build `public/` from source |
 | `npm run serve` | Static file server for `public/` (zero-dep, defaults to `http://localhost:8080`) |
 | `npm run dev` | Watch source + rebuild on change (needs `node` >= 18) |
-| `npm run import:check` | Dry-run the Supabase content migration (validate only) |
-| `npm run import:content` | Import local content into Supabase (non-destructive) |
 
 ## Centralized content config (`src/config/site.json`)
 
@@ -88,34 +88,44 @@ now the single source of truth for featured selection.
 
 ```
 scripts/
-  build.js     zero-dependency template engine + asset pipeline
+  build.js     template engine + asset pipeline (reads content/, src/data/, src/config/)
   serve.js     static server with directory-index resolution
   dev.js       watch + rebuild
-  lib/         content-source adapter (Supabase ↔ local) + REST client
-  import-content.js  migration into Supabase (validated, additive)
-  mock-supabase-test.js  integration suite (fake Supabase, real scripts)
-supabase/      migration SQL (schema + RLS + storage policies)
+  lib/
+    content-source.js   file-system content loader (markdown → HTML, enrichment)
 src/
   config/      central content-selection config (featured/ordering)
-  data/        content collections (site, nav, projects, events, posts, …)
+  data/        content collections (site, nav, projects, resources, team, …)
   pages/       page templates (home, about, projects, blog, …)
   partials/    head, header, footer, scripts
 static/
   css/         tokens → type → layout → nav → horizontal → components → pages → anim
   js/          theme, horizontal, reveal, transitions, pages, main (+ vendored libs)
-  admin/       standalone admin app (served at /admin/)
 public/        build output (everything below is generated, do not edit)
 ```
 
 ## Editing content
 
-All content is JSON. Each collection is a flat array of objects; the engine
-exposes each item's fields as `.field` and computes a few helpers
-(`.n` = 1-based index, `.slug`, `.url`, `.isActive` for the current page).
+Content is file-driven — drop files in a content folder and rebuild; the
+items appear automatically:
+
+- `content/blog/*.md` → Tech Journal posts
+- `content/events/*.md` → events calendar
+- `content/gallery/*` (jpg/png/webp/gif/svg) → gallery strip (optional
+  `captions.json` sidecar overrides captions)
+- `content/team/<batch>/<seed>.<ext>` → real member photos (auto-detected)
+- `funkystuff/*.html` + an entry in `src/data/funkystuff.json` → game shelf
+- `src/data/*.json` → the structured collections (site, nav, team, projects,
+  resources, achievements, pages, funkystuff manifest). Each collection is a
+  flat array of objects; the engine exposes every item's fields as `.field`
+  and computes a few helpers (`.n` = 1-based index, `.slug`, `.url`,
+  `.isActive` for the current page).
+- `src/config/site.json` → featured/curated selections + ordering by slug
 
 > JSON cannot carry comments, so every data file is documented here.
 > Field-level behaviour (codes, urls, thumbs, status booleans…) is added
-> in the "data loading + enrichment" section of `scripts/build.js`.
+> in `scripts/lib/content-source.js` (markdown) and the "enrichment"
+> functions of `scripts/build.js` (JSON collections).
 
 > Publishing blog posts or events? Read **`way.md`** — the step-by-step
 > content guide.

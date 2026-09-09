@@ -7,9 +7,7 @@
   "scripts": {
     "build": "node scripts/build.js",
     "serve": "node scripts/serve.js",
-    "dev": "node scripts/dev.js",
-    "import:content": "node scripts/import-content.js",
-    "import:check": "node scripts/import-content.js --dry-run"
+    "dev": "node scripts/dev.js"
   },
   "engines": {
     "node": ">=18"

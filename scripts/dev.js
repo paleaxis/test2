@@ -12,10 +12,11 @@
  *   - Runs one initial build so public/ is fresh.
  *   - Starts serve.js as a child process (inherits stdio, so its
  *     "listening" log shows up here).
- *   - Watches src/ and static/ recursively. Any change triggers a
- *     rebuild after a 120ms debounce (so editor save-storms collapse
- *     into one build). The server itself keeps running — it serves
- *     straight from public/, which each rebuild rewrites.
+ *   - Watches src/, static/, content/ and funkystuff/ recursively. Any
+ *     change triggers a rebuild after a 120ms debounce (so editor
+ *     save-storms collapse into one build). The server itself keeps
+ *     running — it serves straight from public/, which each rebuild
+ *     rewrites.
  *   - SIGINT/SIGTERM kill the child server and exit cleanly.
  *
  * NOTE: there is no live-reload/browser refresh — you reload manually.
@@ -26,8 +27,16 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-// directories whose changes should trigger a rebuild
-const WATCH = [path.join(ROOT, 'src'), path.join(ROOT, 'static')];
+// directories whose changes should trigger a rebuild — includes the
+// file-driven content folders (content/blog, content/events,
+// content/gallery) and the funkystuff library, so dropping a file in
+// and saving is the whole edit loop.
+const WATCH = [
+  path.join(ROOT, 'src'),
+  path.join(ROOT, 'static'),
+  path.join(ROOT, 'content'),
+  path.join(ROOT, 'funkystuff'),
+];
 
 // run build.js to completion; resolve when it exits
 function build() {
@@ -46,7 +55,7 @@ function serve() {
 (async () => {
   await build();
   const server = serve();
-  console.log('watching src/ and static/ …');
+  console.log('watching src/, static/, content/ and funkystuff/ …');
   let timer = null;
   // debounced rebuild: reset the timer on every change event
   const onChange = () => {

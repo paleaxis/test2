@@ -4,13 +4,6 @@ Everything you need to know to add content to the DCITC site without
 touching a single HTML file. One Markdown file per post/event, run the
 build, done.
 
-> **Backend mode:** if the club uses the Supabase admin (`/admin/`, see
-> BACKEND.md), you do this in the browser instead — create/edit posts
-> and events there, flip them from Draft to Live, then rebuild. The
-> same fields exist in both places; the markdown files below remain
-> the offline/seed source and everything in this guide about naming,
-> dates and structure still applies.
-
 ```
 content/
 ├── blog/      ← Tech Journal articles  →  /blog/<slug>/

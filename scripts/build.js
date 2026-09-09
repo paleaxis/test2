@@ -59,8 +59,9 @@
 
 const fs = require('fs');
 const path = require('path');
-// Content adapter: Supabase (backend) → local files (fallback), one
-// enriched/validated/sanitized shape for both. See scripts/lib/.
+// Content adapter — reads all content from the file system
+// (content/blog/*.md, content/events/*.md, src/data/*.json…). See
+// scripts/lib/content-source.js.
 const contentSource = require('./lib/content-source');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -482,13 +483,10 @@ function renderTemplate(tpl, scope, root) {
 //   thumb/src — generated SVG artwork path (see SVG section)
 // plus per-type extras (status booleans, formatted dates, reading time).
 
-// LOCAL SEEDS — every collection starts from its repo JSON file. When
-// Supabase is configured and a matching content_collections row exists
-// (key = collection name), the COLLECTION is re-derived from that row in
-// boot() instead (the DB then becomes the source of truth for it). The
-// local file stays the seed/default + offline-mode data. The SAME
-// enrichment functions run either way, so the two sources are
-// indistinguishable downstream.
+// LOCAL SEEDS — every collection starts from its repo JSON file. All
+// content comes straight from these files (src/data/*.json,
+// content/blog/*.md, content/events/*.md, content/gallery/, …): drop a
+// file in and it appears on the next build.
 const siteSeed = readJSON(path.join(SRC, 'data', 'site.json')); // global identity: name, socials, facts…
 const navSeed = readJSON(path.join(SRC, 'data', 'nav.json')); // nav items + active-match rules
 const projectsSeed = readJSON(path.join(SRC, 'data', 'projects.json'));
@@ -516,11 +514,8 @@ let currentBatchId = teamSeed.current;
 let teamBatchesList = [];
 let activeProjectsCount = 0;
 let gallery = [];
-let galleryFiles = null; // [{path}] — set when gallery came from storage
-let galleryFallback = false; // true when Supabase had no published items
 
-// enrichment — exact same math the old inline blocks performed; must
-// stay reusable so the DB source can be enriched identically
+// enrichment — derives display fields every template consumes
 function enrichProjects(list) {
   return list.map((p, i) => ({
     ...p,
@@ -549,24 +544,8 @@ function enrichResources(list) {
 
 // Resource filter chips (resources page "Browse" section). Order here
 // is the order the buttons render in.
-const CATEGORIES = [
-  'Programming',
-  'Linux',
-  'Systems',
-  'Web',
-  'AI / ML',
-  'Security',
-  'Algorithms',
-  'Electronics',
-  'Open Source',
-  'Dev Tools',
-];
-
-// deriveCollections(collections) — rerun enrichment + team derivation.
-// `collections` is the DB override (content_collections: key → payload)
-// or null; absent keys fall back to the local seed files. Called once at
-// module load (local defaults) and again from boot() after the content
-// source resolves, so the DB can supersede any collection the admin edits.
+// deriveCollections() — run enrichment + team derivation from the local
+// seed files. Called once at module load.
 const TEAM_PHOTO_DIR = path.join(ROOT, 'content', 'team');
 const TEAM_PHOTO_RE = /\.(jpe?g|png|webp)$/i;
 function scanTeamPhotos(batchId) {
@@ -583,20 +562,15 @@ function scanTeamPhotos(batchId) {
   return map;
 }
 
-function deriveCollections(collections) {
-  const c = collections || {};
-  // Per-key fallback: a DB collection with a top-level field missing
-  // (edited only in part, e.g. just `site.name`) inherits that field
-  // from the local seed. Full replacement rows still win entirely.
-  const pick = (key, seed) => (c[key] === undefined ? seed : { ...seed, ...c[key] });
-  site = pick('site', siteSeed);
-  navDef = pick('nav', navSeed);
-  projects = enrichProjects(c.projects || projectsSeed);
-  achievements = enrichAchievements(c.achievements || achievementsSeed);
-  resources = enrichResources(c.resources || resourcesSeed);
+function deriveCollections() {
+  site = siteSeed;
+  navDef = navSeed;
+  projects = enrichProjects(projectsSeed);
+  achievements = enrichAchievements(achievementsSeed);
+  resources = enrichResources(resourcesSeed);
 
-  // team is array-free: it's { current, batches } — merge just like site
-  const raw = pick('team', teamSeed);
+  // team is array-free: it's { current, batches }
+  const raw = teamSeed;
   teamRaw = raw;
   teamBatches = {};
   for (const [batchId, batch] of Object.entries(raw.batches || {})) {
@@ -620,79 +594,35 @@ function deriveCollections(collections) {
   activeProjectsCount = projects.filter((p) => p.status === 'active').length;
 }
 
-deriveCollections(null); // local seeds → enriched defaults
+deriveCollections(); // local seeds → enriched defaults
 
 /* ------------------------------------------------------------------ */
-/* content source (Supabase → local fallback)                          */
+/* content source — pure file-system reads                             */
 /* ------------------------------------------------------------------ */
-// All backend-managed content — blog posts, events, funkystuff and the
-// centralized site config — is loaded through scripts/lib/
-// content-source.js. Priority order:
-//
-//   1. Supabase, when SUPABASE_URL + a server-side key are set
-//      (SUPABASE_SECRET_KEY, or the legacy SUPABASE_SERVICE_ROLE_KEY —
-//      build-time only, never bundled).
-//   2. Local files (content/blog, content/events, src/data/…), the
-//      original authoring model — still the fully supported offline
-//      mode and the fallback if the backend is unreachable.
+// All content — blog posts, events, funkystuff and the centralized
+// site config — is loaded from local files through scripts/lib/
+// content-source.js. Drop a .md file in content/blog/ or content/events/
+// and it appears on the next build; drop an image in content/gallery/ and
+// it becomes a gallery item.
 //
 // The loader returns collections ALREADY enriched with exactly the
 // fields the rest of this file has always consumed (slug, url, code,
 // cover, readingTime, status booleans, contentHtml …) and Markdown is
-// rendered + SANITIZED there, identically for both sources. So the
-// only structural change below is that loading is asynchronous (the
-// fetch must resolve before any template renders) — see boot() at the
-// bottom of this file. Everything downstream (resolveRefs, templates,
-// makeItem, the SVG generator) is untouched.
+// rendered + SANITIZED there. Loading is synchronous — no network, no
+// waits.
 
-const pendingContent = contentSource.loadContent();
-let posts;
-let events;
-let funky = [];
-let funkyFiles = null; // [{slug, path}] — set when content came from Supabase
+const { posts, events, funky, siteConfig } = contentSource.loadContent();
 
-pendingContent.then((loaded) => {
-  posts = loaded.posts;
-  events = loaded.events;
-  funky = loaded.funky;
-  funkyFiles = loaded.funkyFiles;
-  // the centralized config object stays the same variable the rest of
-  // the build reads; the backend version replaces the file contents
-  Object.assign(config, loaded.siteConfig);
-  // the six repo-JSON collections + the gallery can also be overridden
-  // from the backend (content_collections + gallery_items/storage).
-  // deriveCollections/deriveGallery fall back to local seeds per-key.
-  deriveCollections(loaded.collections);
-  deriveGallery(loaded.gallery);
-  for (const n of loaded.notices) console.warn(`note: ${n}`);
-  console.log(`content source: ${loaded.source}`);
-});
+// the centralized config object is the file itself; keep the reference
+Object.assign(config, siteConfig);
 
-// (posts + events are loaded via content-source — see the "content
-// source" section above. Sorting, ART.xx/EVENT.xx display codes, the
-// first-upcoming deck flag and every derived field the templates use
-// are applied there with the exact same rules this file used to
-// implement inline. The content/blog/*.md and content/events/*.md
-// authoring model remains fully supported as the local source.)
-
-/* GALLERY — photo strip. Two sources, selected by the content-source
-   loader (exactly like routes above):
-     • LOCAL (legacy/default): <root>/content/gallery/ — drop any image
-       (jpg/jpeg/png/webp/gif/svg) in and it becomes an item, captions
-       optionally overridden by content/gallery/captions.json.
-     • SUPABASE: metadata in gallery_items + files in the `gallery`
-       storage bucket (object key = file name at bucket root).
-       content-source returns {items, files}; build enriches the items
-       with the exact same layout metadata (size class + parallax speed
-       from the deterministic pattern below) and downloads the files
-       verbatim into public/gallery/.
+/* GALLERY — photo strip. Single source: <root>/content/gallery/ — drop
+   any image (jpg/jpeg/png/webp/gif/svg) in and it becomes an item,
+   captions optionally overridden by content/gallery/captions.json.
    Layout metadata is index-based (cycling GALLERY_LAYOUT/GALLERY_SPEEDS)
    so the scattered, mixed-size strip holds no matter the file count. */
 const GALLERY_DIR = path.join(ROOT, 'content', 'gallery');
 const GALLERY_IMAGE_RE = /\.(jpe?g|png|webp|gif|svg)$/i;
-// let gallery = [];            // computed by deriveGallery()
-// let galleryFiles = null;     // [{path}] — set when gallery came from storage
-// let galleryFallback = false; // true when Supabase had no published items
 
 // deterministic size/speed layout: indexes cycle big/normal/small × orientation
 const GALLERY_LAYOUT = [
@@ -725,8 +655,7 @@ function humanizeCaption(name) {
 }
 
 // galleryItemsFromRows(rows) — deterministic size/speed layout by index.
-// `rows` = [{ file, caption }] in display order. Works identically for
-// the local folder scan (loadLocalGallery) and the Supabase gallery_items.
+// `rows` = [{ file, caption }] in display order, from the folder scan.
 function galleryItemsFromRows(rows) {
   if (!rows.length) return [];
   return rows.map((r, i) => {
@@ -777,20 +706,9 @@ function loadLocalGallery() {
   return galleryItemsFromRows(files.map((f) => ({ file: f, caption: captions[f] })));
 }
 
-// deriveGallery(source) — pick the gallery source for this build.
-// `source` = { items, files } from content-source (Supabase) or null.
-// Falls back to the local folder when Supabase has no published items.
-function deriveGallery(source) {
-  if (source && source.items && source.items.length) {
-    const items = [...source.items].sort((a, b) => (a.sort - b.sort) || a.file.localeCompare(b.file));
-    gallery = galleryItemsFromRows(items);
-    galleryFiles = source.files || [];
-    galleryFallback = false;
-    return;
-  }
-  if (source && source.items && !source.items.length) galleryFallback = true;
+// deriveGallery() — build the gallery from the local content/gallery/ folder.
+function deriveGallery() {
   gallery = loadLocalGallery();
-  galleryFiles = null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -833,10 +751,6 @@ function resolveRefs(list, coll, label, key) {
 // The `featured` boolean previously scattered across content files is
 // gone — this config is now the single source of truth for featured and
 // ordering. Active/past subsets remain status-derived (not config).
-//
-// NOTE: these depend on the ASYNC content source (posts/events/config
-// may come from Supabase), so they are derived once per build from
-// boot() AFTER the content source resolves — see deriveSelections().
 let featuredProjects;
 let featuredPosts;
 let featuredResources;
@@ -862,22 +776,15 @@ function deriveSelections() {
   upcomingEvents = events.filter((e) => e.upcoming); // events page deck (all upcoming)
   pastEvents = events.filter((e) => e.past || e.ongoing); // events page archive/series
 }
-const resourceCats = CATEGORIES; // filter buttons
+
 
 /* FUNKYSTUFF — self-contained web toys/games library -----------------
-   Two sources, selected by the content-source loader:
+   Single source: <root>/funkystuff/*.html plus the listing manifest
+   src/data/funkystuff.json. Each manifest entry names a file; the build
+   copies those files verbatim into public/funkystuff/. Drop a new toy
+   in funkystuff/ AND list it in the manifest to grow the shelf.
 
-   • LOCAL (legacy/default): <root>/funkystuff/*.html plus the listing
-     manifest src/data/funkystuff.json. Rows carry `_localFile` and the
-     build copies those files verbatim into public/funkystuff/.
-
-   • SUPABASE: metadata lives in funkystuff_items; the actual files
-     live in the `funkystuff` storage bucket under <slug>/<path>.
-     content-source downloads the object index into `funkyFiles` and
-     the build fetches each object verbatim — multi-file projects are
-     supported, `entry_file` is what list rows open.
-
-   Templates see the same shape either way: n / url / title / dept / by
+   Templates see: n / url / title / dept / by
    (n = padded row index, assigned in content-source normalization). */
 const FUNKY_DIR = path.join(ROOT, 'funkystuff');
 let funkyDepts = [];
@@ -1220,7 +1127,6 @@ function buildPage(page) {
     featuredResources,
     achievements,
     resources,
-    resourceCats,
     posts,
     team,
     teamBatches,
@@ -1230,7 +1136,6 @@ function buildPage(page) {
     gallery,
     funky,
     funkyDepts,
-    CATEGORIES,
     activeProjectsCount,
   };
   const tpl = read(path.join(SRC, 'pages', page.template || page.file));
@@ -1245,21 +1150,21 @@ function buildPage(page) {
 // Pipeline order: wipe public/ → generate SVG assets → write CSS/JS
 // bundles → render top-level pages → render per-item pages → extras.
 
-// The pipeline entry: wait for the content source (network fetch when
-// Supabase is configured), derive the funky department chips from the
-// loaded rows, then run the synchronous template pipeline as before.
-async function boot() {
-  await pendingContent;
+// The pipeline entry: derive the funky department chips + padded row
+// indexes from the file-loaded rows, derive the config selections, then
+// run the synchronous template pipeline.
+function boot() {
+  deriveGallery();
   funkyDepts = [...new Set(funky.map((f) => f.dept))];
   // padded row index for the divided list (templates print {{ .n }})
   funky.forEach((f, i) => {
     f.n = String(i + 1).padStart(2, '0');
   });
   deriveSelections();
-  await main();
+  build();
 }
 
-async function main() {
+function build() {
   const t0 = Date.now();
   fs.rmSync(OUT, { recursive: true, force: true });
 
@@ -1303,66 +1208,14 @@ async function main() {
   // never concatenated, it loads as-is before the bundle.
   fs.cpSync(path.join(STATIC, 'js', 'vendor'), path.join(OUT, 'js', 'vendor'), { recursive: true });
 
-  // 2a-bis. admin app (content management) ---------------------------
-  // Standalone app at /admin/ (static/admin/). PUBLIC values only are
-  // injected into it — the Supabase URL and the publishable key (or the
-  // legacy anon key as a fallback). The secret/service key stays in .env
-  // and is used exclusively by the build scripts; all admin writes are
-  // authorized by database RLS, not by this page.
-  console.log('admin');
-  fs.mkdirSync(path.join(OUT, 'admin'), { recursive: true });
-  const restClient = require('./lib/supabase-rest');
-  restClient.loadEnv();
-  const adminUrl = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
-  const adminPub = restClient.publishableKey();
-  const adminHtml = read(path.join(STATIC, 'admin', 'index.html'))
-    .replace('{{ADMIN_SUPABASE_URL}}', adminUrl)
-    .replace('{{ADMIN_SUPABASE_PUBLISHABLE_KEY}}', adminPub);
-  const adminJs = read(path.join(STATIC, 'admin', 'app.js'))
-    .replace('{{ADMIN_SUPABASE_URL}}', adminUrl)
-    .replace('{{ADMIN_SUPABASE_PUBLISHABLE_KEY}}', adminPub)
-    .replace('{{ADMIN_PROJECT_SLUGS}}', JSON.stringify(projects.map((p) => p.slug)))
-    .replace('{{ADMIN_RESOURCE_SLUGS}}', JSON.stringify(resources.map((r) => r.slug)))
-    .replace(
-      '{{ADMIN_COLLECTION_SEEDS}}',
-      JSON.stringify({
-        site: siteSeed,
-        nav: navSeed,
-        team: teamSeed,
-        projects: projectsSeed,
-        resources: resourcesSeed,
-        achievements: achievementsSeed,
-      }),
-    );
-  write(path.join(OUT, 'admin', 'index.html'), adminHtml);
-  write(path.join(OUT, 'admin', 'app.js'), adminJs);
-  write(path.join(OUT, 'css', 'admin.css'), read(path.join(STATIC, 'admin', 'admin.css')));
-  // the admin page links the site's token stylesheet for visual parity
-  write(path.join(OUT, 'css', '01-vars.css'), read(path.join(STATIC, 'css', '01-vars.css')));
-  if (!adminUrl || !adminPub) {
-    console.warn('  admin: SUPABASE_URL / SUPABASE_PUBLISHABLE_KEY not set — /admin/ will show a setup hint');
-  }
-
   // 2b. funkystuff library files -------------------------------------
   // copied verbatim so /funkystuff/<file> URLs work; the launcher page
   // (/funkystuff/) opens each one in a new tab.
   console.log('funkystuff');
   fs.mkdirSync(path.join(OUT, 'funkystuff'), { recursive: true });
-  if (funkyFiles) {
-    // Supabase source: every project's files come down from the
-    // funkystuff storage bucket → public/funkystuff/<slug>/<path>
-    const rest = require('./lib/supabase-rest');
-    const c = rest.client();
-    for (const f of funkyFiles) {
-      const data = await rest.downloadObject(c, 'funkystuff', f.path);
-      write(path.join(OUT, 'funkystuff', f.path), data);
-    }
-    console.log(`  ${funkyFiles.length} file(s) from storage bucket`);
-  } else {
-    // Local source: copy manifest-listed files verbatim (legacy shape)
-    for (const it of funky) {
-      write(path.join(OUT, 'funkystuff', it.file), read(path.join(FUNKY_DIR, it._localFile || it.file)));
-    }
+  // copy manifest-listed files verbatim
+  for (const it of funky) {
+    write(path.join(OUT, 'funkystuff', it.file), read(path.join(FUNKY_DIR, it._localFile || it.file)));
   }
 
   // 2c. team photos ---------------------------------------------------
@@ -1383,23 +1236,12 @@ async function main() {
   }
 
   // 2d. gallery assets ------------------------------------------------
-  // Copy image files to public/gallery/ verbatim. Two sources mirroring
-  // the loader: storage bucket `gallery` (when the backend provided the
-  // items) or the local content/gallery/ folder. captions.json / DB
-  // captions are metadata only — never copied. Items are pre-rendered
-  // into the page; this makes the files servable.
+  // Copy image files to public/gallery/ verbatim from the local
+  // content/gallery/ folder. captions.json is metadata only — never
+  // copied. Items are pre-rendered into the page; this makes the files
+  // servable.
   console.log('gallery');
-  if (galleryFiles && galleryFiles.length) {
-    const rest = require('./lib/supabase-rest');
-    const c = rest.client();
-    const gdir = path.join(OUT, 'gallery');
-    fs.mkdirSync(gdir, { recursive: true });
-    for (const f of galleryFiles) {
-      const data = await rest.downloadObject(c, 'gallery', f.path);
-      write(path.join(gdir, f.path), data);
-    }
-    console.log(`  ${galleryFiles.length} file(s) from storage bucket`);
-  } else if (fs.existsSync(GALLERY_DIR)) {
+  if (fs.existsSync(GALLERY_DIR)) {
     const gdir = path.join(OUT, 'gallery');
     fs.mkdirSync(gdir, { recursive: true });
     const files = fs.readdirSync(GALLERY_DIR).filter((f) => GALLERY_IMAGE_RE.test(f));
@@ -1444,14 +1286,12 @@ async function main() {
         featuredPosts,
         featuredResources,
         achievements,
-        resources,
-        resourceCats,
-        posts,
-        gallery,
-        funky,
-        funkyDepts,
-        CATEGORIES,
-        activeProjectsCount,
+resources,
+    posts,
+    gallery,
+    funky,
+    funkyDepts,
+    activeProjectsCount,
       };
       write(
         path.join(OUT, 'team', batchId, 'index.html'),
@@ -1497,7 +1337,6 @@ async function main() {
         featuredResources,
         achievements,
         resources,
-        resourceCats,
         posts,
         team,
         teamBatches,
@@ -1507,7 +1346,6 @@ async function main() {
         gallery,
         funky,
         funkyDepts,
-        CATEGORIES,
         activeProjectsCount,
       };
       write(
@@ -1542,7 +1380,9 @@ async function main() {
   console.log(`done in ${Date.now() - t0}ms → public/`);
 }
 
-boot().catch((e) => {
+try {
+  boot();
+} catch (e) {
   console.error(e.message || e);
   process.exit(1);
-});
+}

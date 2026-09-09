@@ -250,8 +250,7 @@ textarea {
   color: var(--ink-faint);
 }
 
-html.no-js [data-reveal],
-html.no-js [data-reveal-stagger] > * {
+html.no-js [data-reveal] {
   opacity: 1 !important;
   transform: none !important;
 }
