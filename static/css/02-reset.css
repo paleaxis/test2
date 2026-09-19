@@ -28,7 +28,11 @@ html {
   /* decorative fixed layers (.bg-glow, .bg-grid, off-canvas .mobile-menu)
      bleed past the viewport; clip at the root so they never create a
      horizontal scrollbar. main.hx scrolls horizontally on its own box,
-     so this does not affect the filmstrip panning. */
+     so this does not affect the filmstrip panning.
+     NOTE: html stays overflow-x hidden (it IS the document scrollport,
+     so it never breaks sticky); body must use *clip* below — a hidden
+     body would become a scroll container of its own and silently kill
+     position:sticky on .site-nav for the vertical pages. */
   overflow-x: hidden;
 }
 
@@ -41,7 +45,11 @@ body {
   line-height: var(--lh-body);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  overflow-x: hidden;
+  /* clip (not hidden): still cuts any horizontal bleed, but unlike
+     hidden/auto/scroll it does NOT turn body into a scroll container,
+     which would make the sticky .site-nav stick to body (scrolling away
+     with the page) instead of the viewport. */
+  overflow-x: clip;
 }
 
 h1,

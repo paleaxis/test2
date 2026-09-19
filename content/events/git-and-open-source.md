@@ -1,29 +1,39 @@
 ---
-title: Intro to Git & Open Source
-date: '2026-10-03'
+title: Linux Fundamentals Workshop
+date: '2026-09-25'
 status: upcoming
-subtitle: 'Your first pull request, without the fear: branching, rebasing, and reading a real codebase.'
+subtitle: 'From the desktop to the shell: understanding Linux the practical way.'
 description: >-
-  A practical introduction to version control for students stuck in the 'zip file' era. We clone a
-  small real repository, break it, fix it, and submit a practice pull request against a club repo
-  with review feedback from senior members.
-location: Seminar Room, Main Building
-duration: 2.5 hours
+  A hands-on introduction to Linux for students who want to understand the terminal, files,
+  permissions, processes, and everyday command-line workflows.
+location: Computer Lab 4, Dhaka College
+duration: 3 hours
 level: Beginner
 speaker:
-  name: Sabbir Rahman
-  role: Open source lead
+  name: Arif Chowdhury
+  role: Systems study group lead
 program:
-  - time: '15:00'
-    title: What Git actually stores
-  - time: '15:40'
-    title: Branching without anxiety
-  - time: '16:20'
-    title: Pull requests and review
-  - time: '17:00'
-    title: 'Live: fix a typo upstream'
+  - time: '14:00'
+    title: What actually happens when you open a terminal
+  - time: '14:30'
+    title: Files, directories, and permissions
+  - time: '15:15'
+    title: Pipes, redirection, and useful commands
+  - time: '16:00'
+    title: Processes and basic system tools
+  - time: '16:30'
+    title: Hands-on challenge
 resources:
-  - Open Source
+  - Linux
+  - Systems
   - Dev Tools
-register: Bring a laptop with Git installed.
+register: Bring a laptop with a Linux environment available.
 ---
+
+## About the workshop
+
+This hands-on session introduces the fundamentals of working with Linux from the command line.
+
+Participants will learn how files, permissions, processes, and common command-line tools work through short explanations and practical exercises.
+
+No previous Linux experience is required.

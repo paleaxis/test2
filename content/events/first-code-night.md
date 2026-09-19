@@ -1,21 +1,39 @@
 ---
-title: First Code Night
-date: '2026-02-21'
-status: past
-subtitle: 'An evening of silent, shared work: bring a problem, leave with a commit.'
+title: Linux Fundamentals Workshop
+date: '2026-09-25'
+status: upcoming
+subtitle: 'From the desktop to the shell: understanding Linux the practical way.'
 description: >-
-  The first of our quiet working nights. No talks, no schedule — just the lab, tea, mentors, and
-  four hours to make progress on whatever you brought. Twelve commits landed.
-location: DCITC Lab
-duration: 4 hours
-level: All levels
+  A hands-on introduction to Linux for students who want to understand the terminal, files,
+  permissions, processes, and everyday command-line workflows.
+location: Computer Lab 4, Dhaka College
+duration: 3 hours
+level: Beginner
 speaker:
-  name: —
-  role: No speaker, by design
+  name: Arif Chowdhury
+  role: Systems study group lead
 program:
-  - time: '18:00'
-    title: Doors open
-  - time: '22:00'
-    title: Commit tally + close
-register: Closed.
+  - time: '14:00'
+    title: What actually happens when you open a terminal
+  - time: '14:30'
+    title: Files, directories, and permissions
+  - time: '15:15'
+    title: Pipes, redirection, and useful commands
+  - time: '16:00'
+    title: Processes and basic system tools
+  - time: '16:30'
+    title: Hands-on challenge
+resources:
+  - Linux
+  - Systems
+  - Dev Tools
+register: Bring a laptop with a Linux environment available.
 ---
+
+## About the workshop
+
+This hands-on session introduces the fundamentals of working with Linux from the command line.
+
+Participants will learn how files, permissions, processes, and common command-line tools work through short explanations and practical exercises.
+
+No previous Linux experience is required.

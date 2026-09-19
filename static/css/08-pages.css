@@ -1594,12 +1594,18 @@ html.js .evx {
 .md-body.ev-brief > * + * {
   margin-top: 1rem;
 }
+.md-body.ev-brief h1,
 .md-body.ev-brief h2,
 .md-body.ev-brief h3 {
   font-family: var(--font-disp);
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--ink);
+}
+.md-body.ev-brief h1 {
+  font-size: clamp(var(--fs-4), 1.2rem + 2vw, var(--fs-5));
+  line-height: 1.12;
+  margin-top: 0;
 }
 .md-body.ev-brief h2 {
   font-size: var(--fs-3);
