@@ -962,18 +962,37 @@
   }
 
   function onDesktopGate(e) {
-    if (e.matches) start();
-    else stopAll();
+    if (e.matches && mounted) start();
+    else if (!e.matches) stopAll();
   }
 
-  function init() {
-    if (mounted) return;
+  var gateBound = false;
 
-    // DESKTOP ONLY: below 900px this is the whole init — nothing
-    // mounts, nothing runs; the CSS also display:none's the layer.
-    mounted = true;
-    DESKTOP_MQ.addEventListener('change', onDesktopGate);
+  // RE-RUNNABLE (soft navigation): a fresh init() after a DOM swap
+  // re-targets the layer element; the mq gate is wired at most once so
+  // breakpoint crossings keep working across page changes. Pages without
+  // [data-fluid-triangle] (everything but home) halt the loop and clear
+  // the layer.
+  function init() {
+    var el = document.querySelector('[data-fluid-triangle]');
+    renderEl = el ? el.querySelector('.render') : null;
+
+    if (!gateBound) {
+      gateBound = true;
+      DESKTOP_MQ.addEventListener('change', onDesktopGate);
+    }
+
+    if (!el) {
+      stopAll();
+      return;
+    }
+
+    if (!mounted) {
+      mounted = true;
+      gravityVector = null; // fresh orientation baseline
+    }
     if (DESKTOP_MQ.matches) start();
+    else if (!DESKTOP_MQ.matches) stopAll(); // e.g. tablet → desktop flip then back
   }
 
   NS.fluidTriangle = { init: init };

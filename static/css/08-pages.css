@@ -1332,6 +1332,250 @@ html.js .evx {
   }
 }
 
+/* floating music player (desktop-only, top-right corner) -------------- */
+/* Markup in src/partials/music.html. Sits just below the sticky nav bar
+   (`top: calc(var(--nav-h) + 1.4rem)`) anchored to the right edge. The
+   batch-switch FAB owns bottom-right, and bottom-left is where the old
+   build sat; combining corners means top-right avoids any collision.
+   Hidden entirely below 900px via the base `display:none` (same
+   desktop-only pattern as .page-fluid). The YouTube iframe host
+   (.mus-frame-host) is created by JS on first use; it is parked
+   off-canvas so nothing visible floats over the page. */
+.mus {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .mus {
+    position: fixed;
+    right: 1.4rem;
+    top: calc(var(--nav-h) + 1.4rem);
+    z-index: 60;
+    display: block;
+  }
+  .mus-fab {
+    display: grid;
+    place-items: center;
+    width: 3.4rem;
+    height: 3.4rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-md);
+    background: var(--bg-elev);
+    color: var(--accent);
+    box-shadow: var(--shadow);
+    cursor: pointer;
+    transition:
+      border-color var(--t-fast) var(--ease),
+      color var(--t-fast) var(--ease),
+      transform var(--t-fast) var(--ease);
+  }
+  .mus-fab svg {
+    width: 1.35rem;
+    height: 1.35rem;
+  }
+  .mus-fab:hover,
+  .mus-fab:focus-visible {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+  }
+  .mus.is-open .mus-fab {
+    display: none;
+  }
+
+  .mus-card {
+    display: none;
+    width: clamp(18.5rem, 21vw, 21rem);
+    flex-direction: column;
+    gap: 0.65rem;
+    padding: 0.8rem 0.9rem 0.85rem;
+    background: var(--bg-elev);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow);
+  }
+  .mus.is-open .mus-card {
+    display: flex;
+  }
+
+  .mus-head {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+  }
+  .mus-kicker {
+    font-size: var(--fs-0);
+    letter-spacing: var(--trk-mono);
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .mus-count {
+    font-size: var(--fs-0);
+    letter-spacing: var(--trk-mono);
+    color: var(--ink-faint);
+  }
+  .mus-status {
+    font-size: var(--fs-0);
+    letter-spacing: var(--trk-mono);
+    color: var(--ink-faint);
+    text-transform: uppercase;
+  }
+  .mus.is-playing .mus-status,
+  .mus.is-buffering .mus-status {
+    color: var(--accent);
+  }
+  .mus.is-error .mus-status {
+    color: var(--red);
+  }
+  .mus-min {
+    margin-left: auto;
+    width: 1.6rem;
+    height: 1.6rem;
+    display: grid;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: calc(var(--r-md) / 2);
+    background: transparent;
+    color: var(--ink-faint);
+    font-size: var(--fs-2);
+    line-height: 1;
+    cursor: pointer;
+    transition:
+      border-color var(--t-fast) var(--ease),
+      color var(--t-fast) var(--ease),
+      transform var(--t-fast) var(--ease);
+  }
+  .mus-min:hover,
+  .mus-min:focus-visible {
+    border-color: var(--line);
+    color: var(--ink);
+    transform: rotate(90deg);
+  }
+
+  .mus-track {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    min-height: 2.6rem;
+  }
+  .mus-thumb {
+    flex: 0 0 auto;
+    width: 4rem;
+    height: 2.25rem;
+    object-fit: cover;
+    border-radius: calc(var(--r-md) / 2);
+    border: 1px solid var(--line);
+  }
+  .mus-meta {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .mus-title {
+    font-size: var(--fs-2);
+    font-weight: 600;
+    color: var(--ink);
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .mus-sub {
+    font-size: var(--fs-0);
+    letter-spacing: var(--trk-mono);
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .mus-ctl {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+  }
+  .mus-btn {
+    flex: 0 0 auto;
+    width: 2.1rem;
+    height: 2.1rem;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    background: var(--bg);
+    color: var(--ink-dim);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition:
+      border-color var(--t-fast) var(--ease),
+      color var(--t-fast) var(--ease),
+      transform var(--t-fast) var(--ease);
+  }
+  .mus-btn:hover,
+  .mus-btn:focus-visible {
+    border-color: var(--accent-line);
+    color: var(--accent);
+    transform: translateY(-1px);
+  }
+  .mus-play {
+    flex: 0 0 auto;
+    width: 2.9rem;
+    height: 2.9rem;
+    display: grid;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 1rem;
+    cursor: pointer;
+    transition:
+      filter var(--t-fast) var(--ease),
+      transform var(--t-fast) var(--ease);
+  }
+  .mus-play:hover,
+  .mus-play:focus-visible {
+    filter: brightness(1.12);
+    transform: translateY(-1px);
+  }
+
+  .mus-err {
+    margin: 0;
+    font-size: var(--fs-1);
+    color: var(--red);
+    line-height: 1.4;
+  }
+
+  .mus-frame-host,
+  .mus-frame-host iframe {
+    position: fixed;
+    left: -9999px;
+    bottom: -9999px;
+    width: 1px;
+    height: 1px;
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .mus-card {
+    animation: musIn 0.18s var(--ease-out);
+  }
+}
+@keyframes musIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* leadership — cards render as a plain inline row (carousel removed);
    only the section-head spacing is tuned here. The .profile component
    keeps its own hover transform and float keyframes. */

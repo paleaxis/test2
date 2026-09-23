@@ -16,9 +16,26 @@ Pages, GitHub Pages…).
 
 | Command | What it does |
 | --- | --- |
-| `npm run build` | Build `public/` from source |
+| `npm run build` | Build `public/` from source (CSS/JS/HTML are minified by `scripts/lib/minify.js`; `DCITC_NO_MINIFY=1` disables for forensics) |
 | `npm run serve` | Static file server for `public/` (zero-dep, defaults to `http://localhost:8080`) |
 | `npm run dev` | Watch source + rebuild on change (needs `node` >= 18) |
+
+## Performance
+
+- **Minified output**: every build runs the CSS/JS/HTML through the
+  conservative zero-dependency minifiers in `scripts/lib/minify.js`
+  (comments + indentation stripped, token semantics preserved). Sizes:
+  `main.css` 100→59KB, `app.js` 76→42KB, HTML −30–45%.
+- **Non-blocking fonts**: the Google Fonts stylesheet uses
+  `media="print" onload` (+ `noscript` fallback) so it never blocks
+  first paint; `display=swap` keeps text rendering immediately.
+- **Cache headers**: `public/_headers` (Cloudflare Pages) and
+  `vercel.json` `headers` (Vercel) long-cache generated art
+  (`/img`, `/gallery`, `/content`) and give `/css` `/js` a 1-day
+  cache + stale-while-revalidate.
+- **Measured** (`/tmp/opencode/perf-audit.js`): home cold transfer
+  238→148KB; desktop home LCP 1308→616ms; throttled-mobile home LCP
+  1972→~1440ms. Minified-vs-unminified rendering is pixel-identical.
 
 ## Centralized content config (`src/config/site.json`)
 
@@ -52,7 +69,7 @@ keeps its single source of truth in its content/data file.
 | `featured.projects` | Home "Featured projects" cards **and** the projects-page "Fresh off the bench" deck (same trio, both pages). | by `slug` (`/projects/<slug>/`) |
 | `featured.posts` | Home "Tech Journal" teaser **and** the blog "Start here." Featured section. | by slug (`/blog/<slug>/`) |
 | `featured.resources` | Home "Curated resources" grid (home-only). | by `slug` in `resources.json` |
-| `home.events` | Home "Upcoming events" list. Curated — the events page keeps showing *all* upcoming events regardless. | by slug (`/events/<slug>/`) |
+| `home.events` | Home "Upcoming events" list (home-only). Where an event sits on the **events page** is a separate config — see `src/config/events.json` below. | by slug (`/events/<slug>/`) |
 
 **How to change featured content / ordering:**
 
@@ -70,11 +87,11 @@ reference is bad and what slugs *are* available — so a typo or a deleted
 content file is caught at build time, never silently dropped.
 
 **What is NOT in the config:** the actual content and per-item metadata
-stay in `content/` (markdown) and `src/data/` (JSON). Status-derived
-lists (upcoming vs. past events, the active-projects count) are computed
-from each item's `status`/`date` fields, not hardcoded. The `featured`
-boolean that used to live in content files was removed — the config is
-now the single source of truth for featured selection.
+stay in `content/` (markdown) and `src/data/` (JSON). Per-event status
+booleans (upcoming vs. ongoing vs. past) and the active-projects count are
+computed from each item's `status`/`date` fields. The `featured` boolean
+that used to live in content files was removed — the config is now the
+single source of truth for featured selection.
 
 ### Content references by type
 
@@ -83,6 +100,54 @@ now the single source of truth for featured selection.
 - **Events** — `content/events/*.md`, keyed by filename (minus `.md`).
 - **Resources** — `src/data/resources.json`, keyed by `slug` (added
   alongside each resource's content; unique in the file).
+
+## Events page config (`src/config/events.json`)
+
+Where each event appears on the events page — and in what order — is
+controlled from **`src/config/events.json`**. It only *references* event
+slugs; the content stays in `content/events/*.md`.
+
+```json
+{
+  "featured": ["git-and-open-source", "linux-fundamentals-workshop", "build-week"],
+  "normal": [
+    "first-code-night",
+    "networking-deep-dive",
+    "ctf-beginner-track",
+    "orientation-2026"
+  ]
+}
+```
+
+- **`featured`** — events rendered in the collapsing deck section. The
+  **first slug** is the initially expanded card (matching the old
+  "newest upcoming is expanded" behavior — the config author decides).
+- **`normal`** — every other event, rendered as rows underneath. An
+  event in `normal` may be `upcoming`, `ongoing` **or** `past` — its
+  row's status chip comes from the frontmatter `status` field, which
+  answers *what* the event is, not *where* it sits.
+- **Array order is display order.** Reordering an array reorders that
+  section; moving a slug between `featured` and `normal` moves the event
+  without touching its Markdown file or any HTML.
+- **Validation (the build enforces it):**
+  - a slug that matches no event → **hard error** that prints the
+    available slugs (catches typos at deploy time, never silently drops
+    an event),
+  - a slug listed twice in one section → **hard error**,
+  - a slug in **both** sections → **hard error** (an event would render
+    twice),
+  - an event on disk but in neither section → **warning** — it still
+    builds its own `/events/<slug>/` page, it just won't be listed on
+    the index. Add the slug to a list to show it.
+  - a `past` event in `featured` → **warning** (it sits in the deck
+    labelled "Upcoming").
+
+**What an event's `status` still controls:** the row/badge chips
+(`upcoming`/`ongoing`/`past`), the event single page, sorting of the
+home list — and nothing about placement on the events page.
+
+To add an event: drop `content/events/<slug>.md`, add `<slug>` to one of
+the lists above, build. To move it: edit the list. Done.
 
 ## Structure
 
@@ -93,16 +158,27 @@ scripts/
   dev.js       watch + rebuild
   lib/
     content-source.js   file-system content loader (markdown → HTML, enrichment)
+    minify.js           zero-dependency minifiers for build output (CSS/JS/HTML)
 src/
-  config/      central content-selection config (featured/ordering)
+  config/      central content-selection config (featured/ordering + events page placement)
   data/        content collections (site, nav, projects, resources, team, …)
   pages/       page templates (home, about, projects, blog, …)
   partials/    head, header, footer, scripts
 static/
   css/         tokens → type → layout → nav → horizontal → components → pages → anim
-  js/          theme, horizontal, reveal, transitions, pages, main (+ vendored libs)
+  js/          theme, horizontal, transitions, reveal, pages, navigate,
+               music-player, fluid-triangle, gallery, main (+ vendored libs)
 public/        build output (everything below is generated, do not edit)
 ```
+
+> `navigate.js` turns internal links into soft navigations (fetch + DOM swap
+> preserving `<body>`-level chrome), so the music player (`music-player.js`,
+> a hardcoded-YouTube-playlist card) keeps playing across page changes. The
+> player playlist lives in the `TRACKS` array at the top of that file — add
+> songs there and rebuild. `main.js` splits boot (one-time) vs page (re-runs
+> on every load and every soft-nav swap); page-scoped modules must stay
+> re-runnable without stacking document/window listeners (see `bindOnce` /
+> `bindScope` in navigate.js).
 
 ## Editing content
 
@@ -110,7 +186,8 @@ Content is file-driven — drop files in a content folder and rebuild; the
 items appear automatically:
 
 - `content/blog/*.md` → Tech Journal posts
-- `content/events/*.md` → events calendar
+- `content/events/*.md` → events calendar (placement on the events page
+  is set by slug in `src/config/events.json` — see above)
 - `content/gallery/*` (jpg/png/webp/gif/svg) → gallery strip (optional
   `captions.json` sidecar overrides captions)
 - `content/team/<batch>/<seed>.<ext>` → real member photos (auto-detected)
@@ -121,6 +198,8 @@ items appear automatically:
   and computes a few helpers (`.n` = 1-based index, `.slug`, `.url`,
   `.isActive` for the current page).
 - `src/config/site.json` → featured/curated selections + ordering by slug
+- `src/config/events.json` → events page placement (featured deck / normal
+  rows) by slug
 
 > JSON cannot carry comments, so every data file is documented here.
 > Field-level behaviour (codes, urls, thumbs, status booleans…) is added
@@ -162,8 +241,8 @@ Event frontmatter (`title`/`date`/`status` required; status must be
 ---
 title: "Linux Fundamentals Workshop"
 date: "2026-09-18"
-status: upcoming               # drives deck/archive placement + badge
-subtitle: "Card text."         # deck + archive cards
+status: upcoming               # chip/badge state — placement is set in src/config/events.json
+subtitle: "Card text."         # deck card + row
 description: "Short brief."    # detail page fallback when no body
 location: "Lab 4"
 duration: "3 hours"
@@ -183,14 +262,14 @@ Optional long-form writeup in markdown — renders in the About plate of
 the event page. Without a body the short `description` is shown.
 ```
 
-Workflow: drop a file → `node scripts/build.js` → pages and listings
-update automatically, sorted newest first (ties: slug asc). Display codes
-(ART.xx / EVENT.xx) are assigned after sorting, so .01 is always the most
-recent. Deleting a `.md` removes its page on the next build (the build
-wipes `public/` wholesale). Drafts are dropped before anything runs.
-Blog images can live anywhere under `static/` — e.g. `static/img/blog/`
-served at `/img/blog/…` — and should be referenced with absolute URLs so
-they resolve from nested `/blog/<slug>/` pages.
+Workflow: drop a file → add its slug to `featured` or `normal` in
+`src/config/events.json` → `node scripts/build.js`. Detail-page codes
+(EVENT.xx) and the home list sort newest first (ties: slug asc). Deleting
+a `.md` removes its page on the next build (the build wipes `public/`
+wholesale). Drafts are dropped before anything runs. Blog images can live
+anywhere under `static/` — e.g. `static/img/blog/` served at
+`/img/blog/…` — and should be referenced with absolute URLs so they
+resolve from nested `/blog/<slug>/` pages.
 
 Dependencies added for this: `marked` (Markdown→HTML) and `js-yaml`
 (frontmatter parsing). Nothing else changed about the pipeline.

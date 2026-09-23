@@ -60,18 +60,65 @@
   var PAR_F = 0.12; // overtake factor per (speed-1): screen x (1 + F*(speed-1))
   var PAR_MAX = 260; // hard clamp so tiles never wander off the strip
 
+  // RE-INIT SAFETY (soft navigation): state for the CURRENT page's
+  // strip lives here at module scope so a second init() cancels the
+  // previous page's rAF loop and re-points the single document click
+  // handler, which stays bound once across navigations.
+  var state = null; // { items, imgs, speeds, offs, running, raf }
+  var clickBound = false;
+
+  function cancelLoop() {
+    if (!state) return;
+    state.running = false;
+    if (state.raf !== null) cancelAnimationFrame(state.raf);
+    state.items.forEach(function (it, i) {
+      it.style.transform = '';
+      state.offs[i] = 0;
+    });
+    state = null;
+  }
+
+  function onDocClick(e) {
+    if (!state || !clickBound) return;
+    // Listen on document (see header note) and resolve the image under
+    // the cursor, so the pointer-captured <main> can't absorb the click.
+    if (!mqDesktop.matches) return;
+    var hit = document.elementFromPoint(e.clientX, e.clientY);
+    var img = hit && hit.closest('.gal-item img');
+    if (!img) return;
+    var imgs = state.imgs;
+    img.classList.add('-clicked');
+    setTimeout(function () {
+      img.classList.remove('-clicked');
+      // re-run the cascade: fade everything out, then back in
+      imgs.forEach(function (im) { im.classList.remove('-active'); });
+      setTimeout(function () {
+        imgs.forEach(function (im, i) {
+          im.style.transitionDelay = reduced ? '0s' : (i % 4) * 0.06 + 's';
+          im.classList.add('-active');
+        });
+      }, 120);
+    }, 1200);
+  }
+
   function init() {
+    // drop any previous page's loop before re-scanning
+    cancelLoop();
+    if (!clickBound) {
+      clickBound = true;
+      document.addEventListener('click', onDocClick);
+    }
+
     var track = document.querySelector('[data-gallery]');
     if (!track) return;
     var items = Array.prototype.slice.call(track.querySelectorAll('.gal-item'));
     if (!items.length) return;
 
-    var main = document.querySelector('main[data-horizontal]');
     var imgs = items.map(function (it) { return it.querySelector('img'); });
     var speeds = items.map(function (it) { return parseFloat(it.getAttribute('data-speed')) || 1; });
-    var clicked = false;
-    var running = false;
-    var raf = null;
+    var offs = new Array(items.length).fill(0);
+
+    state = { items: items, imgs: imgs, speeds: speeds, offs: offs, running: false, raf: null };
 
     // --- reveal cascade -------------------------------------------------
     function reveal() {
@@ -81,76 +128,42 @@
       });
     }
 
-    // --- click-to-zoom --------------------------------------------------
-    // Listen on document (see header note) and resolve the image under
-    // the cursor, so the pointer-captured <main> can't absorb the click.
-    function wireClick() {
-      document.addEventListener('click', function (e) {
-        if (!mqDesktop.matches) return;
-        var hit = document.elementFromPoint(e.clientX, e.clientY);
-        var img = hit && hit.closest('.gal-item img');
-        if (!img) return;
-        clicked = true;
-        img.classList.add('-clicked');
-        setTimeout(function () {
-          img.classList.remove('-clicked');
-          // re-run the cascade: fade everything out, then back in
-          imgs.forEach(function (im) { im.classList.remove('-active'); });
-          setTimeout(function () {
-            reveal();
-            clicked = false; // resume parallax after the re-cascade
-          }, 120);
-        }, 1200);
-      });
-    }
-
     // --- parallax -------------------------------------------------------
     // offset_i = centre_i * (speed_i - 1) * PAR_F, applied to the TILE.
     // centre is measured live but always MINUS what we already applied,
     // so no feedback. Runs on desktop (page scroller) and mobile (strip
     // scroller) with the same code.
-    var offs = new Array(items.length).fill(0);
     function tick() {
-      raf = null;
-      if (!running) return;
+      state.raf = null;
+      if (!state.running) return;
       var half = window.innerWidth / 2;
-      for (var i = 0; i < items.length; i++) {
-        var it = items[i];
+      for (var i = 0; i < state.items.length; i++) {
+        var it = state.items[i];
         var r = it.getBoundingClientRect();
-        var centre = r.left + r.width / 2 - offs[i] - half; // subtract our own shift
-        var target = centre * (speeds[i] - 1) * PAR_F;
+        var centre = r.left + r.width / 2 - state.offs[i] - half; // subtract our own shift
+        var target = centre * (state.speeds[i] - 1) * PAR_F;
         if (target > PAR_MAX) target = PAR_MAX;
         else if (target < -PAR_MAX) target = -PAR_MAX;
         // low-pass toward target: no pops when a tile first enters the
         // window, and the motion reads as silk instead of quantised jumps
-        var off = offs[i] + (target - offs[i]) * 0.18;
-        if (Math.abs(off - offs[i]) > 0.05) {
-          offs[i] = off;
+        var off = state.offs[i] + (target - state.offs[i]) * 0.18;
+        if (Math.abs(off - state.offs[i]) > 0.05) {
+          state.offs[i] = off;
           it.style.transform = 'translateX(' + off.toFixed(1) + 'px)';
         }
       }
-      raf = requestAnimationFrame(tick);
-    }
-
-    function resetTiles() {
-      items.forEach(function (it, i) {
-        it.style.transform = '';
-        offs[i] = 0;
-      });
+      state.raf = requestAnimationFrame(tick);
     }
 
     // Parallax runs on desktop (page filmstrip) AND the mobile strip —
     // the loop reads live rects, so whichever scroller moves the tiles is
     // picked up. Reduced motion keeps it off.
     if (!reduced) {
-      running = true;
-      if (!raf) raf = requestAnimationFrame(tick);
-    } else {
-      resetTiles();
+      state.running = true;
+      if (!state.raf) state.raf = requestAnimationFrame(tick);
     }
 
     reveal();
-    wireClick();
   }
 
   window.DCITC = window.DCITC || {};

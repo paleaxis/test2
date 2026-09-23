@@ -187,24 +187,21 @@ the event page.
 | Field | Format | Notes |
 | --- | --- | --- |
 | `title` | string | Page `<h1>` + card titles. |
-| `date` | `"YYYY-MM-DD"` | Drives ordering and codes. For multi-day events use the START date. |
-| `status` | `upcoming` \| `ongoing` \| `past` | Exactly these three words, lowercase, no quotes needed (quotes fine too). Controls everything about WHERE the event appears: |
+| `date` | `"YYYY-MM-DD"` | Drives detail-page ordering and codes. For multi-day events use the START date. |
+| `status` | `upcoming` \| `ongoing` \| `past` | Exactly these three words, lowercase, no quotes needed (quotes fine too). `status` answers **what** the event is — it drives the status chip/badge and the home list. |
 
-| `status` | Appears in | Badge says |
-| --- | --- | --- |
-| `upcoming` | Home list + events-page collapsing deck | `upcoming` |
-| `ongoing` | events-page "Ongoing series" section | `ongoing` |
-| `past` | events-page Archive grid | `done` |
-
-Flip the status as reality happens — that is the whole update process.
-The FIRST upcoming event by date order ships as the expanded card in the
-collapsing deck.
+> **Placement is a config decision, not a frontmatter one.** WHERE an
+> event appears on the events page is set in `src/config/events.json`:
+> its slug goes under `featured` (collapsing deck) or `normal` (rows
+> underneath). The same `.md` is valid in either section — there is no
+> `featured:` key in the file. Flip `status` as reality happens; to move
+> an event between sections, edit the config list, not the Markdown.
 
 **Optional:**
 
 | Field | What it does |
 | --- | --- |
-| `subtitle` | Deck/archive card text. Punchy one-liner. |
+| `subtitle` | Deck card / row text. Punchy one-liner. |
 | `description` | Short brief. Shown on the detail page ONLY when there is no markdown body — so always fill it, it keeps working as fallback. |
 | `location` · `duration` · `level` | The four-cell meta row on the event page (with Date). |
 | `speaker` | `name` + `role`, rendered as the big speaker datum. Use `name: "—"` for events with deliberately no speaker (see First Code Night). |
@@ -229,6 +226,45 @@ or one table max.
 
 No body? Nothing breaks: the page falls back to the `description`
 paragraph.
+
+### 3.4 Placing the event on the events page
+
+`content/events/<slug>.md` defines the event; **`src/config/events.json`
+decides where it appears** (and in what order):
+
+```json
+{
+  "featured": ["my-new-event", "git-and-open-source"],
+  "normal": ["first-code-night", "ctf-beginner-track"]
+}
+```
+
+**Adding an event, end to end:**
+
+1. Create `content/events/my-new-event.md` from the template (copy
+   `content/events/_template.md`, which the build ignores; or use §3.1).
+2. Add `"my-new-event"` to `featured` (→ collapsing deck) or `normal`
+   (→ rows) in `src/config/events.json`.
+3. `node scripts/build.js`.
+4. Done — the event appears in the configured section at the configured
+   position.
+
+**Moving an event between sections:** edit the slug's position in the
+config and rebuild. The Markdown file and the template never change.
+The **first** slug in `featured` ships as the deck's expanded card.
+
+**What the build enforces** (it fails loudly rather than shipping a
+broken page):
+
+- slug that matches no `.md` → error listing every available slug,
+- same slug twice in a section → error,
+- slug in both `featured` and `normal` → error,
+- a `.md` in `content/events/` but not assigned to either list →
+  warning: its detail page still builds but it won't be listed.
+  Add the slug to a list to show it.
+
+`status` plays no part in placement — an event in `normal` may be
+`upcoming`, `ongoing` or `past`; its badge reflects the frontmatter.
 
 ---
 
@@ -287,9 +323,10 @@ Consequences worth knowing:
   slugs listed under `featured.posts` in `src/config/site.json`, in that
   order. To feature a post, add its slug (filename minus `.md`) there and
   rebuild. There is **no** per-post `featured` flag anymore.
-- The events deck ships expanded on the **latest-dated** upcoming event
-  (upcoming events are ordered newest-first). Set realistic dates and it
-  picks right; flip statuses as time passes.
+- The events page is the one exception: its deck/rows order comes from
+  the **slug order in `src/config/events.json`**, not from dates. The
+  deck ships expanded on the **first** `featured` slug. Dates still
+  drive the home list and the detail-page pager.
 - Home-page lists and every listing re-sort themselves on every build.
 
 ---
@@ -329,6 +366,9 @@ how you stage content during a meeting without blocking other builds.
 | `unparsable date` | Use `"YYYY-MM-DD"`. |
 | `status must be upcoming\|ongoing\|past` | Exact lowercase word, no synonyms. |
 | `filename must be lowercase-hyphenated` | Rename the file; it becomes the URL. |
+| `events.json "featured"/"normal" references unknown event "..."` | Typo in `src/config/events.json`, or the `.md` was renamed/deleted. The error lists every available slug — pick from that list. |
+| `events.json lists "..." more than once` / `in both "featured" and "normal"` | Each event slug may appear in exactly one place in the config. |
+| `"... is not listed in "featured" or "normal"` (warning) | An event on disk isn't assigned to a section, so it won't appear on the events index (its detail page still builds). Add the slug to one list. |
 
 If the build succeeds, the site is correct — the pipeline validates
 itself rather than shipping junk.
@@ -340,6 +380,7 @@ itself rather than shipping junk.
 - [ ] Filename is clean, lowercase-hyphenated, meaningful (it IS the URL).
 - [ ] `title`, `date` present (event: also `status`).
 - [ ] `description` written — it's the sales pitch on cards.
+- [ ] Event slug is listed in `featured` or `normal` in `src/config/events.json` (events only).
 - [ ] Event `status` reflects reality today, and `register` isn't stale.
 - [ ] No `# H1` at the top of the body.
 - [ ] Image paths absolute (`/img/...`).

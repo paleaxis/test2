@@ -47,6 +47,9 @@
   var enabled = false; // listeners bound? (true only ≥900px)
   var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var mq = window.matchMedia('(min-width: 900px)'); // keep in sync with CSS --hx-break
+  var mqBound = false; // mq 'change' gate wired once (module is re-initable)
+  var vertical = null; // vertical fallback currently active?
+  var vScroll, vResize; // vertical mode listener refs
 
   var goal = null; // desired scrollLeft (wheel / keys / drag)
   var mode = null; // 'drive' while easing toward goal, null when idle
@@ -258,36 +261,58 @@
     parallax(0);
   }
 
-  // vertical fallback for pages without <main data-horizontal>
-  // (article.html): progress bar tracks normal document scroll.
-  function initVertical() {
-    function update() {
-      var doc = document.documentElement;
-      var max = doc.scrollHeight - window.innerHeight;
-      var pct = max > 0 ? window.scrollY / max : 0;
-      if (elProgress) elProgress.style.width = (pct * 100).toFixed(2) + '%';
+  // vertical fallback for pages without <main data-horizontal> (article):
+  // progress bar tracks normal document scroll. Plain paired add/remove —
+  // setVertical(false) on the next horizontal page tears it down.
+  function setVertical(on) {
+    if (on === vertical) return;
+    vertical = on;
+    if (on) {
+      vScroll = function () {
+        var doc = document.documentElement;
+        var max = doc.scrollHeight - window.innerHeight;
+        var pct = max > 0 ? window.scrollY / max : 0;
+        if (elProgress) elProgress.style.width = (pct * 100).toFixed(2) + '%';
+      };
+      vResize = vScroll;
+      window.addEventListener('scroll', vScroll, { passive: true });
+      window.addEventListener('resize', vResize);
+      vScroll();
+    } else {
+      window.removeEventListener('scroll', vScroll);
+      window.removeEventListener('resize', vResize);
+      vScroll = vResize = null;
+      if (elProgress) elProgress.style.width = '0%';
     }
-    window.addEventListener('scroll', update, { passive: true });
-    window.addEventListener('resize', update);
-    update();
   }
 
-  // entry point (main.js). Decides horizontal vs vertical and reacts
-  // live when the viewport crosses the 900px breakpoint.
+  // breakpoint gate, module-scope so it can be wired once
+  function apply(e) {
+    e.matches ? enable() : disable();
+  }
+
+  // entry point. Decides horizontal vs vertical and reacts live when the
+  // viewport crosses the 900px breakpoint. RE-RUNNABLE: main.js calls it
+  // again after every soft navigation with a fresh <main>; disable() runs
+  // first so the previous page's element listeners are released and the
+  // mq gate is never stacked (bindOnce handles that part).
   HX.init = function () {
+    if (main) disable();
+    if (vertical) setVertical(false);
+
     main = document.querySelector('main[data-horizontal]');
     elProgress = document.querySelector('.progress-fill');
 
     if (!main) {
-      initVertical();
+      setVertical(true);
       return;
     }
 
-    var apply = function (e) {
-      e.matches ? enable() : disable();
-    };
-    if (mq.addEventListener) mq.addEventListener('change', apply);
-    else if (mq.addListener) mq.addListener(apply);
+    if (!mqBound) {
+      mqBound = true;
+      if (mq.addEventListener) mq.addEventListener('change', apply);
+      else if (mq.addListener) mq.addListener(apply); // older Safari
+    }
     apply(mq);
   };
 })();

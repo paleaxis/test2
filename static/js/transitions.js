@@ -31,8 +31,14 @@
     return a.origin !== window.location.origin;
   }
 
-  // play the exit transition, then really navigate
+  // play the exit transition, then soft-navigate (navigate.js fetches
+  // the target and swaps the DOM in-place, so the music player keeps
+  // playing; only unsupported targets fall back to a real reload)
   function go(href) {
+    if (window.DCITC.navigate) {
+      window.DCITC.navigate.go(href);
+      return;
+    }
     if (reduced) {
       window.location.href = href;
       return;

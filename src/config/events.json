@@ -1,0 +1,9 @@
+{
+  "featured": ["git-and-open-source", "linux-fundamentals-workshop", "build-week"],
+  "normal": [
+    "first-code-night",
+    "networking-deep-dive",
+    "ctf-beginner-track",
+    "orientation-2026"
+  ]
+}

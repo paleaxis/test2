@@ -252,7 +252,7 @@ function loadEvents() {
   }
 
   evs.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.slug.localeCompare(b.slug)));
-  const mapped = evs.map((ev, i) => ({
+  return evs.map((ev, i) => ({
     ...ev,
     code: `EVENT.${String(i + 1).padStart(2, '0')}`,
     past: ev.status === 'past',
@@ -260,9 +260,6 @@ function loadEvents() {
     upcoming: ev.status === 'upcoming',
     dateFmt: ev.dateFmt || fmtDate(ev.date),
   }));
-  const firstUpcoming = mapped.find((ev) => ev.upcoming);
-  if (firstUpcoming) firstUpcoming.first = true;
-  return mapped;
 }
 
 function loadFunkystuff() {

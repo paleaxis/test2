@@ -1,0 +1,59 @@
+<!-- ==================================================================
+     DCITC MUSIC PLAYER  —  src/partials/music.html
+     ==================================================================
+     Desktop-only (≥900px) floating card, TOP-RIGHT corner just below
+     the sticky nav bar (the team page's batch switcher owns bottom-right).
+     Plays the hardcoded playlist in static/js/music-player.js (TRACKS).
+     The card lives at BODY level so soft navigation (navigate.js) never
+     re-creates it — the same node + hidden YouTube iframe keep audio
+     playing across page changes.
+
+     Markup contract with static/js/music-player.js (DCITC.musicPlayer):
+       [data-mus]        root wrapper (`.is-open` shows the card)
+       [data-mus-open]   minimized FAB → expand card
+       [data-mus-card]   the card itself
+       [data-mus-close]  collapse card → FAB
+       [data-mus-prev]   previous track
+       [data-mus-play]   play/pause (▶ / ❚❚)
+       [data-mus-next]   next track
+       [data-mus-title]  current track title
+       [data-mus-sub]    secondary line (artist)
+       [data-mus-count]  playlist position "01 / 08"
+       [data-mus-thumb]  video thumbnail (img, hidden until loaded)
+       [data-mus-status] PAUSED / LOADING / BUFFERING / PLAYING
+       [data-mus-err]    error line (hidden until an error)
+     ================================================================== -->
+<div class="mus" data-mus>
+  <button class="mus-fab" data-mus-open type="button" aria-label="Open music player">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 18V5l12-2v13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="6" cy="18" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
+      <circle cx="18" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
+    </svg>
+  </button>
+
+  <div class="mus-card" data-mus-card>
+    <header class="mus-head">
+      <span class="mono mus-kicker">MUSIC</span>
+      <span class="mono mus-count" data-mus-count aria-hidden="true">01 / 03</span>
+      <span class="mono mus-status" data-mus-status>PAUSED</span>
+      <button class="mus-min" data-mus-close type="button" aria-label="Minimize music player">×</button>
+    </header>
+
+    <div class="mus-track">
+      <img class="mus-thumb" data-mus-thumb alt="" width="128" height="72" loading="lazy" decoding="async" hidden src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" />
+      <div class="mus-meta">
+        <span class="mus-title" data-mus-title>Pause, it’s empty</span>
+        <span class="mus-sub mono" data-mus-sub>—</span>
+      </div>
+    </div>
+
+    <div class="mus-ctl">
+      <button class="mus-btn" data-mus-prev type="button" aria-label="Previous track">⏮</button>
+      <button class="mus-play" data-mus-play type="button" aria-label="Play">▶</button>
+      <button class="mus-btn" data-mus-next type="button" aria-label="Next track">⏭</button>
+    </div>
+
+    <p class="mus-err" data-mus-err role="alert" hidden></p>
+  </div>
+</div>

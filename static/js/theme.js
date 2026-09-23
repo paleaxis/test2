@@ -40,7 +40,9 @@
     root.style.colorScheme = theme;
   }
 
-  // toggle button handler: flip, persist, apply
+  // toggle button handler: flip, persist, apply. Bound via bindScope so
+  // re-init after a soft navigation re-points at the fresh nav button
+  // without stacking document listeners.
   function toggle() {
     var next = current() === 'dark' ? 'light' : 'dark';
     try {
@@ -51,21 +53,24 @@
     apply(next);
   }
 
-  function init() {
-    // wire the nav button ([data-theme-toggle] in header.html)
-    var btn = document.querySelector('[data-theme-toggle]');
-    if (btn) btn.addEventListener('click', toggle);
+  function onBtnClick(e) {
+    if (e.target.closest('[data-theme-toggle]')) toggle();
+  }
 
-    // follow system changes unless the user chose manually
-    var onChange = function (ev) {
-      try {
-        if (!localStorage.getItem(KEY)) apply(ev.matches ? 'light' : 'dark');
-      } catch (e) {
-        apply(ev.matches ? 'light' : 'dark');
-      }
-    };
-    if (sys.addEventListener) sys.addEventListener('change', onChange);
-    else if (sys.addListener) sys.addListener(onChange); // older Safari
+  // follow system changes unless the user chose manually (bound once —
+  // matchMedia is document-global and survives DOM swaps)
+  function onChange(ev) {
+    try {
+      if (!localStorage.getItem(KEY)) apply(ev.matches ? 'light' : 'dark');
+    } catch (e) {
+      apply(ev.matches ? 'light' : 'dark');
+    }
+  }
+
+  function init() {
+    if (window.DCITC.bindScope) window.DCITC.bindScope(document, 'theme-toggle', 'click', onBtnClick);
+    if (window.DCITC.bindOnce) window.DCITC.bindOnce(sys, 'change', onChange);
+    else if (sys.addEventListener) sys.addEventListener('change', onChange); // no navigate.js
   }
 
   // register on the shared namespace consumed by main.js

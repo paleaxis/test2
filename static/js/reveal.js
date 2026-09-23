@@ -32,6 +32,9 @@
   'use strict';
 
   var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var elZ = []; // current page's [data-reveal]/[data-stagger] elements
+  var io = null; // current IntersectionObserver
+  var booted = false; // window listeners wired once (re-init safe)
 
   // hero headline: .hero-line clips overflow; inner .hl slides up
   function heroReveal() {
@@ -52,16 +55,34 @@
     });
   }
 
+  // safety net: reveal anything in view after fast scrolls the observer
+  // may have skipped (e.g. Home/End jumps on the horizontal strip).
+  // rAF-throttled so it costs one pass/frame. Reads module-scope elZ,
+  // so the same window listener stays correct across soft navigations.
+  var ticking = false;
+  function revealVisible() {
+    ticking = false;
+    elZ.forEach(function (el) {
+      if (el.classList.contains('is-in')) return;
+      var r = el.getBoundingClientRect();
+      if (!(r.top >= window.innerHeight || r.left >= window.innerWidth)) {
+        el.classList.add('is-in');
+        if (io) io.unobserve(el);
+      }
+    });
+  }
+
   function init() {
-    var els = document.querySelectorAll('[data-reveal], [data-stagger]');
+    elZ = Array.prototype.slice.call(document.querySelectorAll('[data-reveal], [data-stagger]'));
+    io = null;
 
     if (reduced || !('IntersectionObserver' in window)) {
       // no motion / no observer: show everything immediately
-      els.forEach(function (el) {
+      elZ.forEach(function (el) {
         el.classList.add('is-in');
       });
     } else {
-      var io = new IntersectionObserver(
+      io = new IntersectionObserver(
         function (entries) {
           entries.forEach(function (en) {
             if (en.isIntersecting) {
@@ -72,25 +93,15 @@
         },
         { threshold: 0.12, rootMargin: '0px 0px -6% 0px' },
       );
-      els.forEach(function (el) {
+      elZ.forEach(function (el) {
         io.observe(el);
       });
+    }
 
-      // safety net: reveal anything in view after fast scrolls the
-      // observer may have skipped (e.g. Home/End jumps on the
-      // horizontal strip). rAF-throttled so it costs one pass/frame.
-      var ticking = false;
-      function revealVisible() {
-        ticking = false;
-        els.forEach(function (el) {
-          if (el.classList.contains('is-in')) return;
-          var r = el.getBoundingClientRect();
-          if (!(r.top >= window.innerHeight || r.left >= window.innerWidth)) {
-            el.classList.add('is-in');
-            io.unobserve(el);
-          }
-        });
-      }
+    // window listeners bind ONCE (the safety net reads the current
+    // page's elements through the module-scope elZ)
+    if (!booted && !reduced && 'IntersectionObserver' in window) {
+      booted = true;
       window.addEventListener(
         'scroll',
         function () {
@@ -102,9 +113,9 @@
         { passive: true },
       );
       window.addEventListener('resize', revealVisible);
-      revealVisible();
     }
 
+    revealVisible();
     heroReveal();
   }
 

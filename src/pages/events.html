@@ -3,24 +3,28 @@
      EVENTS INDEX  —  src/pages/events.html  →  public/events/index.html
      ==================================================================
      WHAT THIS FILE CONTROLS:
-       The events hub, split by status (booleans computed in
-       scripts/build.js from each event's "status" field):
+       The events hub. PLACEMENT IS CONFIG-DRIVEN: src/config/events.json
+       maps every event slug into one of two sections (order = display
+       order), resolved in scripts/build.js to eventsPage:
 
-       00 Overview        intro + counts of upcoming/past
-        01 Upcoming        .evx collapsing card deck for the
-                           upcomingEvents subset (one expanded card,
-                           the rest thin strips; hover/click/keyboard
-                           expands — see .evx block in 08-pages.css
-                           and initEventDeck() in pages.js; cards are
-                           plain --bg-elev, no cover imagery)
-       02 Ongoing series  .ev-row list — filters pastEvents with
-                          `if .ongoing`
-       03 Archive         .ev-row list — filters pastEvents with
-                          `if .past`
+        01 Featured     .evx collapsing card deck for the
+                        eventsPage.featured list (first featured ships
+                        data-active pre-rendered; hover/click/keyboard
+                        expands — see .evx block in 08-pages.css and
+                        initEventDeck() in pages.js; cards are plain
+                        --bg-elev, no cover imagery)
+        02 Other events .ev-row list of everything in eventsPage.normal;
+                        each row's status chip comes from the event's
+                        frontmatter status (upcoming/ongoing/past) —
+                        it answers WHAT the event is, not WHERE it sits
 
-     Each card/row links to the event's single page
-     (/events/<slug>/, rendered from event.html).
-     Data source: src/data/events.json.
+     The deck/rows never see slugs: the template only loops the resolved
+     eventsPage.featured / eventsPage.normal arrays.
+     Status (upcoming/ongoing/past) drives the row chips, the single-page
+     badge and the HOME list (home.events in site.json) — not placement.
+     Each card/row links to the event's single page (/events/<slug>/,
+     rendered from event.html).
+     Content: content/events/*.md (filename = slug).
      ================================================================== -->
 <html lang="{{ .site.meta.language }}">
 {{ include "partials/head.html" }}
@@ -46,7 +50,7 @@
         <h2 class="h-section">Next on the bench.</h2>
       </div>
       <ul class="evx" data-evx>
-        {{ each .upcomingEvents }}
+        {{ each .eventsPage.featured }}
         <li class="evx-item"{{ if .first }} data-active="true"{{ end }}>
           <article>
             <span class="evx-strip mono">{{ .title }}</span>
@@ -68,49 +72,23 @@
     </div>
   </section>
 
-  <!-- SECTION 02 — ONGOING SERIES -->
-  <section class="sec sec--fit" data-section="Ongoing" data-code="02" data-label="Ongoing series">
+  <!-- SECTION 02 — OTHER EVENTS -->
+  <section class="sec sec--fit" data-section="Other events" data-code="02" data-label="Other events">
     <div class="sec-in">
       <div class="sec-head" data-reveal>
-        <p class="kicker">02 — Ongoing series</p>
-        <h2 class="h-section">Rolling enrollment, weekly rhythm.</h2>
+        <p class="kicker">02 — Other events</p>
+        <h2 class="h-section">Everything else on the bench.</h2>
       </div>
       <div class="ev-list" data-stagger>
-        {{ each .pastEvents }}
-          {{ if .ongoing }}
-          <a class="ev-row" href="{{ .url }}">
-            <span class="ev-date">{{ fmtDate .date }}</span>
-            <span class="ev-main">
-              <h3>{{ .title }}</h3>
-              <p>{{ .location }} · {{ .level }}</p>
-            </span>
-            <span class="status status--ongoing">{{ .status }}</span>
-          </a>
-          {{ end }}
-        {{ end }}
-      </div>
-    </div>
-  </section>
-
-  <!-- SECTION 03 — ARCHIVE -->
-  <section class="sec sec--fit" data-section="Archive" data-code="03" data-label="Archive">
-    <div class="sec-in">
-      <div class="sec-head" data-reveal>
-        <p class="kicker">03 — Archive</p>
-        <h2 class="h-section">What we've already run.</h2>
-      </div>
-      <div class="ev-list" data-stagger>
-        {{ each .pastEvents }}
-          {{ if .past }}
-          <a class="ev-row" href="{{ .url }}">
-            <span class="ev-date">{{ fmtDate .date }}</span>
-            <span class="ev-main">
-              <h3>{{ .title }}</h3>
-              <p>{{ .location }} · {{ .level }}</p>
-            </span>
-            <span class="status status--past">done</span>
-          </a>
-          {{ end }}
+        {{ each .eventsPage.normal }}
+        <a class="ev-row" href="{{ .url }}">
+          <span class="ev-date">{{ fmtDate .date }}</span>
+          <span class="ev-main">
+            <h3>{{ .title }}</h3>
+            <p>{{ .location }} · {{ .level }}</p>
+          </span>
+          <span class="status status--{{ .status }}">{{ .status }}</span>
+        </a>
         {{ end }}
       </div>
     </div>
@@ -122,6 +100,7 @@
 <div class="bg-grid" aria-hidden="true"></div>
 <div class="bg-glow" aria-hidden="true"></div>
 <div class="grain" aria-hidden="true"></div>
+{{ include "partials/music.html" }}
 {{ include "partials/scripts.html" }}
 </body>
 </html>

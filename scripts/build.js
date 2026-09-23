@@ -59,6 +59,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { minifyCss, minifyJs, minifyHtml } = require('./lib/minify');
 // Content adapter — reads all content from the file system
 // (content/blog/*.md, content/events/*.md, src/data/*.json…). See
 // scripts/lib/content-source.js.
@@ -81,6 +82,12 @@ function read(p) {
 function write(p, c) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, c);
+}
+// write a rendered page through the HTML minifier (comments stripped,
+// formatting whitespace collapsed; pre/script/style preserved verbatim)
+// DCITC_NO_MINIFY=1 rebuilds untouched output (debug/forensics only).
+function writeHtml(p, c) {
+  write(p, process.env.DCITC_NO_MINIFY ? c : minifyHtml(c));
 }
 // read + parse a JSON data file from src/data/
 function readJSON(p) {
@@ -501,6 +508,15 @@ const teamSeed = readJSON(path.join(SRC, 'data', 'team.json'));
 // resolveRefs helper in the "selecting featured content" section).
 const config = readJSON(path.join(SRC, 'config', 'site.json'));
 
+// EVENTS PAGE CONFIG — src/config/events.json controls where each event
+// appears on the events page: `featured` → the collapsing deck, `normal`
+// → the rows underneath. Same philosophy as the site config above:
+// references are by slug, content stays in content/events/*.md, and a
+// missing/duplicate reference is a hard build error (see
+// resolveEventsPage in the "selecting featured content" section).
+const eventsConfigPath = path.join(SRC, 'config', 'events.json');
+const eventsConfig = fs.existsSync(eventsConfigPath) ? readJSON(eventsConfigPath) : null;
+
 // enriched (derived) values — reassigned by deriveCollections()
 let site = siteSeed;
 let navDef = navSeed;
@@ -742,21 +758,125 @@ function resolveRefs(list, coll, label, key) {
   });
 }
 
+// resolveEventsPage(eventsConfig, allEvents) → { featured, normal }
+// Builds the events-page placement from src/config/events.json. Both
+// lists are slug arrays resolved against the loaded events, preserving
+// CONFIG order (which drives display order). Validation is strict so a
+// typo or a deleted .md can never silently drop an event from the page:
+//   - a slug with no matching event   → hard error (available slugs listed)
+//   - a slug repeated in one list     → hard error
+//   - a slug in BOTH lists            → hard error (an event renders twice)
+// Unassigned events (present in content/events/, in neither list) only
+// WARN — they still build their own detail page at /events/<slug>/, so a
+// warning matches the funkystuff unlisted-files convention. The first
+// featured event is flagged `first` so the deck ships with the initially
+// expanded card pre-rendered (data-active), mirroring how featured.projects
+// primes the projects deck.
+function resolveEventsPage(eventsConfig, allEvents) {
+  if (!eventsConfig) {
+    throw new Error(
+      'config: src/config/events.json does not exist — create it with "featured" and "normal" slug lists to control the events page',
+    );
+  }
+  for (const section of ['featured', 'normal']) {
+    if (eventsConfig[section] === undefined) {
+      throw new Error(
+        `config: src/config/events.json is missing the "${section}" list — add it to control the events page`,
+      );
+    }
+    if (!Array.isArray(eventsConfig[section])) {
+      throw new Error(
+        `config: src/config/events.json "${section}" must be an array of event slugs`,
+      );
+    }
+  }
+
+  const index = new Map(allEvents.map((ev) => [ev.slug, ev]));
+
+  const resolveSection = (section) => {
+    const seen = new Set();
+    return eventsConfig[section].map((ref) => {
+      if (typeof ref !== 'string' || !ref) {
+        throw new Error(
+          `config: src/config/events.json "${section}" entries must be event slug strings (got ${JSON.stringify(ref)})`,
+        );
+      }
+      if (seen.has(ref)) {
+        throw new Error(
+          `config: src/config/events.json "${section}" lists "${ref}" more than once — each event may appear only once`,
+        );
+      }
+      seen.add(ref);
+      const found = index.get(ref);
+      if (!found) {
+        const keys = [...index.keys()].sort();
+        throw new Error(
+          `config: src/config/events.json "${section}" references unknown event ` +
+            `"${ref}"\n\nAvailable events:\n- ${keys.join('\n- ') || 'none'}`,
+        );
+      }
+      return found;
+    });
+  };
+
+  const featured = resolveSection('featured');
+  const normal = resolveSection('normal');
+
+  // no event may sit in two sections — that would render it twice
+  const inFeatured = new Set(featured.map((ev) => ev.slug));
+  for (const ev of normal) {
+    if (inFeatured.has(ev.slug)) {
+      throw new Error(
+        `config: src/config/events.json lists "${ev.slug}" in both "featured" and "normal" — ` +
+          `each event may appear in only one section`,
+      );
+    }
+  }
+
+  // every event on disk should be assigned to exactly one section
+  const assigned = new Set([...featured, ...normal].map((ev) => ev.slug));
+  for (const ev of allEvents) {
+    if (!assigned.has(ev.slug)) {
+      console.warn(
+        `events: "${ev.slug}" is not listed in "featured" or "normal" in src/config/events.json — ` +
+          `it won't appear on the events index (its detail page still builds). ` +
+          `Add the slug to one of the lists to show it.`,
+      );
+    }
+  }
+
+  // a past event in the "Upcoming" deck would contradict the section name
+  for (const ev of featured) {
+    if (ev.past) {
+      console.warn(
+        `events: "${ev.slug}" is featured but its status is "past" — it will sit in the ` +
+          `Upcoming deck. Consider moving it to "normal" or updating its status.`,
+      );
+    }
+  }
+
+  // first featured event ships as the deck's initially expanded card
+  if (featured[0]) featured[0].first = true;
+
+  return { featured, normal };
+}
+
 // Select everything the templates consume, straight from config:
 //   featured.projects → home "Featured projects" + projects-page deck
 //   featured.posts    → home "Tech Journal" + blog "Featured"
 //   featured.resources→ home "Curated resources" (home-only, no page copy)
-//   home.events       → home "Upcoming events" (curated; events page keeps
-//                       ALL upcoming via upcomingEvents below)
+//   home.events       → home "Upcoming events" (curated; home-only)
+//   eventsPage        → events INDEX placement: featured → .evx deck,
+//                       normal → .ev-row list (see src/config/events.json)
 // The `featured` boolean previously scattered across content files is
 // gone — this config is now the single source of truth for featured and
-// ordering. Active/past subsets remain status-derived (not config).
+// ordering. Per-event status booleans (upcoming/ongoing/past) remain
+// status-derived and answer WHAT an event is; placement answers WHERE.
 let featuredProjects;
 let featuredPosts;
 let featuredResources;
 let homeEvents;
-let upcomingEvents;
-let pastEvents;
+let eventsPage;
 
 function deriveSelections() {
   featuredProjects = resolveRefs(config.featured.projects, projects, 'featured.projects', 'slug');
@@ -773,8 +893,9 @@ function deriveSelections() {
   featuredResources = resolveRefs(config.featured.resources, resources, 'featured.resources', 'slug');
   homeEvents = resolveRefs(config.home.events, events, 'home.events', 'slug');
 
-  upcomingEvents = events.filter((e) => e.upcoming); // events page deck (all upcoming)
-  pastEvents = events.filter((e) => e.past || e.ongoing); // events page archive/series
+  // events page placement — src/config/events.json decides where every
+  // event appears (featured → deck, normal → rows), in config order.
+  eventsPage = resolveEventsPage(eventsConfig, events);
 }
 
 
@@ -1077,9 +1198,11 @@ const CSS_FILES = [
 const JS_FILES = [
   'theme.js',
   'horizontal.js',
-  'reveal.js',
   'transitions.js',
+  'reveal.js',
   'pages.js',
+  'navigate.js',
+  'music-player.js',
   'fluid-triangle.js',
   'gallery.js',
   'main.js',
@@ -1119,8 +1242,7 @@ function buildPage(page) {
     nav: navFor(page),
     projects,
     events,
-    upcomingEvents,
-    pastEvents,
+    eventsPage,
     homeEvents,
     featuredProjects,
     featuredPosts,
@@ -1140,7 +1262,7 @@ function buildPage(page) {
   };
   const tpl = read(path.join(SRC, 'pages', page.template || page.file));
   const html = renderTemplate(tpl, scope, scope);
-  write(path.join(OUT, page.out), html);
+  writeHtml(path.join(OUT, page.out), html);
   console.log(`  ✓ ${page.out}`);
 }
 
@@ -1201,9 +1323,17 @@ function build() {
   }
 
   // 2. CSS / JS bundles (see CSS_FILES/JS_FILES for order rules) ----
+  // Both are run through the zero-dependency minifiers (scripts/lib/
+  // minify.js) — comments + indentation stripped, whitespace collapsed.
+  // The minifiers are deliberately conservative: they never rename
+  // tokens or drop separating whitespace, so the bundles behave byte-
+  // for-byte like the unminified concat (verified by /tmp/opencode/
+  // regress-events.js after every rebuild).
   console.log('bundles');
-  write(path.join(OUT, 'css', 'main.css'), concat(path.join(STATIC, 'css'), CSS_FILES));
-  write(path.join(OUT, 'js', 'app.js'), concat(path.join(STATIC, 'js'), JS_FILES));
+  const cssBundle = concat(path.join(STATIC, 'css'), CSS_FILES);
+  const jsBundle = concat(path.join(STATIC, 'js'), JS_FILES);
+  write(path.join(OUT, 'css', 'main.css'), process.env.DCITC_NO_MINIFY ? cssBundle : minifyCss(cssBundle));
+  write(path.join(OUT, 'js', 'app.js'), process.env.DCITC_NO_MINIFY ? jsBundle : minifyJs(jsBundle));
   // vendored lib (anime.min.js, used by reveal.js) is copied verbatim —
   // never concatenated, it loads as-is before the bundle.
   fs.cpSync(path.join(STATIC, 'js', 'vendor'), path.join(OUT, 'js', 'vendor'), { recursive: true });
@@ -1279,8 +1409,7 @@ function build() {
         batchesList: teamBatchesList,
         projects,
         events,
-        upcomingEvents,
-        pastEvents,
+        eventsPage,
         homeEvents,
         featuredProjects,
         featuredPosts,
@@ -1293,7 +1422,7 @@ resources,
     funkyDepts,
     activeProjectsCount,
       };
-      write(
+      writeHtml(
         path.join(OUT, 'team', batchId, 'index.html'),
         renderTemplate(read(path.join(SRC, 'pages', 'team.html')), scope, scope),
       );
@@ -1329,8 +1458,7 @@ resources,
         nav: navFor({ url: item.url }),
         projects,
         events,
-        upcomingEvents,
-        pastEvents,
+        eventsPage,
         homeEvents,
         featuredProjects,
         featuredPosts,
@@ -1348,7 +1476,7 @@ resources,
         funkyDepts,
         activeProjectsCount,
       };
-      write(
+      writeHtml(
         path.join(OUT, outFn(item)),
         renderTemplate(read(path.join(SRC, 'pages', template)), scope, scope),
       );
@@ -1376,6 +1504,29 @@ resources,
 
   // 5. site extras ---------------------------------------------------
   write(path.join(OUT, 'robots.txt'), 'User-agent: *\nAllow: /\n');
+  // Cloudflare Pages cache headers (served from CF; vercel.json carries
+  // the equivalent `headers` for Vercel). Conservative TTLs — css/js are
+  // NOT fingerprint-versioned, so a 1-day cache + stale-while-revalidate
+  // keeps deploys fresh while caching the heavy repeats. Generated art
+  // (img/, gallery/) is immutable-by-name so it caches longer.
+  write(
+    path.join(OUT, '_headers'),
+    [
+      '/*',
+      '  Cache-Control: no-cache',
+      '/css/*',
+      '  Cache-Control: public, max-age=86400, stale-while-revalidate=604800',
+      '/js/*',
+      '  Cache-Control: public, max-age=86400, stale-while-revalidate=604800',
+      '/img/*',
+      '  Cache-Control: public, max-age=31536000, immutable',
+      '/gallery/*',
+      '  Cache-Control: public, max-age=31536000, immutable',
+      '/content/*',
+      '  Cache-Control: public, max-age=31536000, immutable',
+      '',
+    ].join('\n'),
+  );
 
   console.log(`done in ${Date.now() - t0}ms → public/`);
 }

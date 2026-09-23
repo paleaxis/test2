@@ -29,9 +29,11 @@
     var menu = document.querySelector('[data-mobile-menu]');
     if (!btn || !menu) return;
 
-    var scrim = document.createElement('div');
-    scrim.className = 'menu-scrim';
-    document.body.appendChild(scrim);
+    var scrim = document.querySelector('.menu-scrim') || document.createElement('div');
+    if (!scrim.parentNode) {
+      scrim.className = 'menu-scrim';
+      document.body.appendChild(scrim);
+    }
 
     function open() {
       menu.classList.add('is-open');
@@ -55,7 +57,8 @@
     menu.querySelectorAll('a').forEach(function (a) {
       a.addEventListener('click', close);
     });
-    document.addEventListener('keydown', function (e) {
+    // re-pointed per page (bindScope) — fresh btn/menu after each swap
+    window.DCITC.bindScope(document, 'menu-escape', 'keydown', function (e) {
       if (e.key === 'Escape') close();
     });
   }
@@ -72,7 +75,7 @@
       var open = more.classList.toggle('is-open');
       btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     });
-    document.addEventListener('click', function (e) {
+    window.DCITC.bindScope(document, 'more-close', 'click', function (e) {
       if (!more.contains(e.target)) {
         more.classList.remove('is-open');
         btn.setAttribute('aria-expanded', 'false');
@@ -236,7 +239,7 @@
     modal.querySelectorAll('[data-dept-close]').forEach(function (el) {
       el.addEventListener('click', close);
     });
-    document.addEventListener('keydown', function (e) {
+    window.DCITC.bindScope(document, 'dept-escape', 'keydown', function (e) {
       if (e.key === 'Escape' && modal.classList.contains('is-open')) close();
     });
   }
@@ -330,7 +333,7 @@
       if (mql.matches) { build(); } else { destroy(); }
     }
 
-    mql.addEventListener('change', onBreakpoint);
+    window.DCITC.bindScope(mql, 'ach-tabs', 'change', onBreakpoint);
     onBreakpoint();
   }
 
@@ -358,10 +361,10 @@
       e.stopPropagation();
       menu.classList.contains('is-open') ? close() : open();
     });
-    document.addEventListener('click', function (e) {
+    window.DCITC.bindScope(document, 'batch-outside', 'click', function (e) {
       if (!wrap.contains(e.target)) close();
     });
-    document.addEventListener('keydown', function (e) {
+    window.DCITC.bindScope(document, 'batch-escape', 'keydown', function (e) {
       if (e.key === 'Escape') close();
     });
   }
